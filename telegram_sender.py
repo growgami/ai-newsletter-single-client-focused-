@@ -194,6 +194,10 @@ async def test_sender():
             for category, channel_key in TELEGRAM_CHANNEL_MAP.items()
         }
         
+        # Debug logging for channel mapping
+        for category, channel_id in channel_mapping.items():
+            logger.info(f"Channel mapping - Category: {category}, Channel ID: {channel_id}")
+            
         # Load summaries
         summaries_file = Path('data') / 'summaries' / f'summaries_{date_str}.json'
         if not summaries_file.exists():
@@ -215,12 +219,14 @@ async def test_sender():
             
             for category, content in summaries.items():
                 if category not in valid_categories:
+                    logger.warning(f"Category {category} not in valid_categories: {valid_categories}")
                     continue
                     
                 try:
                     channel_id = channel_mapping.get(category)
+                    logger.info(f"Processing {category} with channel ID: {channel_id}")
                     if not channel_id:
-                        logger.error(f"No channel ID found for {category}")
+                        logger.error(f"No channel ID found for {category} in mapping: {channel_mapping}")
                         continue
                         
                     logger.info(f"Sending {category} summary...")
