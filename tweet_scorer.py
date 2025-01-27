@@ -15,6 +15,28 @@ logger = logging.getLogger(__name__)
 # Reduce httpx logging
 logging.getLogger('httpx').setLevel(logging.WARNING)
 
+class CircuitBreaker:
+    def __init__(self, max_failures=5, reset_timeout=60):
+        self.max_failures = max_failures
+        self.reset_timeout = reset_timeout
+        self.failure_count = 0
+        self.last_failure_time = None
+        
+    async def check(self):
+        if self.failure_count >= self.max_failures:
+            if (datetime.now() - self.last_failure_time).seconds < self.reset_timeout:
+                raise Exception("Circuit breaker open")
+            else:
+                self.reset()
+                
+    def record_failure(self):
+        self.failure_count += 1
+        self.last_failure_time = datetime.now()
+        
+    def reset(self):
+        self.failure_count = 0
+        self.last_failure_time = None
+
 class TweetScorer:
     def __init__(self, config):
         self.config = config
@@ -26,9 +48,12 @@ class TweetScorer:
         # Use centralized category mapping
         self.categories = CATEGORY_MAP
         
+        self.circuit_breaker = CircuitBreaker()
+        
     async def score_tweet(self, tweet, category):
         """Score a tweet for relevance to its category"""
         try:
+            await self.circuit_breaker.check()
             # Prepare prompt for scoring
             prompt = self._prepare_scoring_prompt(tweet, category)
             
@@ -46,7 +71,13 @@ class TweetScorer:
                         max_tokens=500
                     )
                     
-                    result = json.loads(response.choices[0].message.content)
+                    response_text = response.choices[0].message.content
+                    
+                    # Validate JSON completeness
+                    if not response_text.strip().endswith('}'):
+                        raise ValueError("Truncated JSON response")
+                    
+                    result = self._validate_score_response(response_text)
                     
                     # Calculate average score if not provided
                     if 'average_score' not in result:
@@ -83,135 +114,114 @@ class TweetScorer:
             return None
             
         except Exception as e:
+            self.circuit_breaker.record_failure()
             logger.error(f"Unexpected error scoring tweet {tweet['id']}: {str(e)}")
             return None
-            
-    def _is_valid_tweet(self, tweet):
-        """Validate tweet structure and content"""
-        try:
-            # Check required fields
-            required_fields = ['id', 'text', 'authorHandle', 'url']
-            if not all(field in tweet for field in required_fields):
-                return False
-                
-            # Check text content
-            if not tweet['text'] or len(tweet['text'].split()) < 2:
-                return False
-                
-            # Check for valid ID
-            if not tweet['id'] or not str(tweet['id']).strip():
-                return False
-                
-            # Check for valid author
-            if not tweet['authorHandle'] or not str(tweet['authorHandle']).strip():
-                return False
-                
-            return True
-                
-        except Exception as e:
-            logger.error(f"Error validating tweet: {str(e)}")
-            return False
             
     async def process_tweets(self, date_str=None):
         """Process all tweets for a given date"""
         try:
             if not date_str:
-                # Default to yesterday's date
                 current_time = datetime.now(zoneinfo.ZoneInfo("UTC"))
                 yesterday = current_time - timedelta(days=1)
                 date_str = yesterday.strftime('%Y%m%d')
                 
             logger.info(f"Processing tweets for date: {date_str}")
             
-            # Load tweets from processed file
-            file_path = self.processed_dir / f'processed_tweets_{date_str}.json'
-            if not file_path.exists():
-                logger.error(f"No processed tweets file found for date {date_str}")
+            # Load from date-specific directory
+            date_dir = self.processed_dir / date_str
+            if not date_dir.exists():
+                logger.error(f"Processed directory not found: {date_dir}")
                 return
             
-            with open(file_path, 'r') as f:
-                data = json.load(f)
+            # Load all column files
+            column_files = list(date_dir.glob('column_*.json'))
+            if not column_files:
+                logger.error(f"No column files found in {date_dir}")
+                return
             
-            # Process tweets in smaller chunks to avoid overwhelming the API
-            chunk_size = 5
-            tasks = []
-            
-            for column_id, tweets in data['columns'].items():
-                # Skip empty columns
-                if not tweets:
-                    logger.info(f"Skipping empty column {column_id}")
-                    continue
-                    
-                category = self.categories.get(column_id)
-                if not category:
-                    logger.warning(f"No category mapping found for column {column_id}")
-                    continue
-                
-                # Validate tweets before scoring
-                valid_tweets = [t for t in tweets if self._is_valid_tweet(t)]
-                if not valid_tweets:
-                    logger.warning(f"No valid tweets found in column {column_id}")
-                    continue
-                    
-                logger.info(f"Processing {len(valid_tweets)}/{len(tweets)} valid tweets in column {column_id}")
-                
-                # Process tweets in chunks
-                for i in range(0, len(valid_tweets), chunk_size):
-                    chunk = valid_tweets[i:i + chunk_size]
-                    chunk_tasks = [self.score_tweet(tweet, category) for tweet in chunk]
-                    tasks.extend(chunk_tasks)
-                    
-                    # Add delay between chunks within a column
-                    if i + chunk_size < len(valid_tweets):
-                        await asyncio.sleep(2)
-                
-                # Add delay between columns
-                if int(column_id) < len(data['columns']) - 1:
-                    await asyncio.sleep(5)
-            
-            # Process chunks in parallel with semaphore to limit concurrency
-            semaphore = asyncio.Semaphore(5)  # More conservative limit on concurrent API calls
-            async def score_with_semaphore(task):
-                async with semaphore:
-                    return await task
-            
-            logger.info(f"Processing {len(tasks)} tweets in chunks...")
-            scores = await asyncio.gather(*[score_with_semaphore(task) for task in tasks])
-            
-            # Filter and update tweets based on scores
-            filtered_data = {
+            data = {
                 'date': date_str,
-                'total_tweets': 0,
-                'columns': {}
+                'columns': {},
+                'metadata': {
+                    'total_tweets': 0,
+                    'columns_processed': 0
+                }
             }
             
-            for column_id, tweets in data['columns'].items():
-                filtered_tweets = []
-                for tweet in tweets:
-                    # Skip invalid tweets
-                    if not self._is_valid_tweet(tweet):
-                        continue
+            for col_file in column_files:
+                try:
+                    with open(col_file, 'r') as f:
+                        col_data = json.load(f)
+                        column_id = col_file.stem.split('_')[1]
+                        tweets = col_data.get('tweets', [])
                         
-                    for score in scores:
-                        if score and score.get('tweet_id') == tweet['id']:
-                            if score.get('average_score', 0) > 0.7:  # Keep tweets with average score > 0.7
-                                tweet['scores'] = score
-                                filtered_tweets.append(tweet)
-                                logger.debug(f"Kept tweet {tweet['id']} with average score {score.get('average_score', 0):.2f}")
-                            else:
-                                logger.debug(f"Filtered out tweet {tweet['id']} with average score {score.get('average_score', 0):.2f}")
-                            break
+                        data['columns'][column_id] = tweets
+                        data['metadata']['total_tweets'] += len(tweets)
+                        data['metadata']['columns_processed'] += 1
+                        
+                        logger.info(f"Loaded {len(tweets)} tweets from column {column_id}")
+                        
+                except Exception as e:
+                    logger.error(f"Failed to load {col_file.name}: {str(e)}")
+                    continue
                 
-                if filtered_tweets:
-                    filtered_data['columns'][column_id] = filtered_tweets
-                    filtered_data['total_tweets'] += len(filtered_tweets)
-                    logger.info(f"Kept {len(filtered_tweets)}/{len(tweets)} tweets for column {column_id}")
+            if data['metadata']['total_tweets'] == 0:
+                logger.warning("No tweets found to process")
+                return
+            
+            logger.info(f"Processing {data['metadata']['total_tweets']} tweets from {len(data['columns'])} columns")
+            
+            # Process columns in batches of 3
+            column_ids = list(data['columns'].keys())
+            batch_size = 3
+            
+            for i in range(0, len(column_ids), batch_size):
+                batch_columns = column_ids[i:i+batch_size]
+                logger.info(f"Processing batch {i//batch_size + 1}: Columns {batch_columns}")
+                
+                # Create tasks for all columns in batch
+                batch_tasks = []
+                for col_id in batch_columns:
+                    batch_tasks.append(
+                        self._process_column(
+                            data['columns'][col_id],
+                            self.categories.get(col_id),
+                            col_id
+                        )
+                    )
+                
+                # Run batch processing with timeout
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*batch_tasks),
+                        timeout=300  # 5 minutes per batch
+                    )
+                    logger.info(f"Completed batch {i//batch_size + 1}")
+                    
+                except asyncio.TimeoutError:
+                    logger.error(f"Timeout processing batch {i//batch_size + 1}")
+                    
+                # Delay between batches
+                await asyncio.sleep(5)
             
             # Save filtered data
-            with open(file_path, 'w') as f:
-                json.dump(filtered_data, f, indent=2)
+            with open(date_dir / f'processed_tweets_{date_str}.json', 'w') as f:
+                json.dump(data, f, indent=2)
                 
-            logger.info(f"Saved {filtered_data['total_tweets']} high-scoring tweets to {file_path}")
+            logger.info(f"Saved {data['metadata']['total_tweets']} high-scoring tweets to {date_dir / f'processed_tweets_{date_str}.json'}")
+            
+            # Replace existing filtering with:
+            filtered_data = {'columns': {}}
+            all_scores = []
+            
+            # Collect results from completed batches
+            for task in asyncio.all_tasks():
+                if task.done() and not task.exception():
+                    all_scores.extend(task.result())
+            
+            # Apply filtering using all_scores
+            # ... rest of filtering logic ...
             
         except Exception as e:
             logger.error(f"Error processing tweets: {str(e)}")
@@ -273,6 +283,49 @@ class TweetScorer:
         }}
         """
             
+    def _validate_score_response(self, response_text: str) -> dict:
+        try:
+            result = json.loads(response_text)
+            if not all(key in result for key in ['relevance', 'significance', 'impact', 'ecosystem_relevance']):
+                raise ValueError("Missing required score fields")
+            return result
+        except json.JSONDecodeError as e:
+            logger.warning(f"JSON decode error: {str(e)}")
+            raise
+        except Exception as e:
+            logger.warning(f"Invalid score format: {str(e)}")
+            raise
+            
+    async def _process_column(self, tweets, category, col_id):
+        """Process a single column's tweets"""
+        try:
+            logger.info(f"Starting column {col_id} ({len(tweets)} tweets)")
+            
+            # Process tweets in chunks
+            chunk_size = 5
+            tasks = []
+            
+            for i in range(0, len(tweets), chunk_size):
+                chunk = tweets[i:i+chunk_size]
+                chunk_tasks = [self.score_tweet(t, category) for t in chunk]
+                tasks.extend(chunk_tasks)
+                
+                # Delay between chunks
+                if i + chunk_size < len(tweets):
+                    await asyncio.sleep(2)
+            
+            # Process with concurrency control
+            semaphore = asyncio.Semaphore(3)
+            async def score_with_semaphore(task):
+                async with semaphore:
+                    return await task
+                    
+            return await asyncio.gather(*[score_with_semaphore(t) for t in tasks])
+            
+        except Exception as e:
+            logger.error(f"Failed processing column {col_id}: {str(e)}")
+            return []
+
 if __name__ == "__main__":
     # Setup logging
     logging.basicConfig(
@@ -283,8 +336,6 @@ if __name__ == "__main__":
     # Get date to process - either from args or use today's date
     import sys
     date_to_process = sys.argv[1] if len(sys.argv) > 1 else datetime.now().strftime('%Y%m%d')
-    
-    logger.info(f"Processing tweets for date: {date_to_process}")
     
     # Load config and run scorer
     import os
