@@ -6,6 +6,7 @@ import asyncio
 from datetime import datetime, timedelta
 import zoneinfo
 from error_handler import with_retry, DataProcessingError, log_error, RetryConfig
+from category_mapping import CATEGORY_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,9 @@ class DataProcessor:
         self.raw_dir = self.data_dir / 'raw'
         self.processed_dir = self.data_dir / 'processed'
         self.retry_config = RetryConfig(max_retries=3, base_delay=1.0, max_delay=15.0)
+        self.category_map = CATEGORY_MAP  # From category_mapping.py
+        self.min_words = 2
+        self.min_tweets_per_category = 3
         
         # Ensure directories exist
         self.processed_dir.mkdir(parents=True, exist_ok=True)
@@ -93,12 +97,13 @@ class DataProcessor:
                 return 0
                 
             # Process tweets by column
-            processed_data = self._process_raw_tweets(raw_columns)
+            processed_data = self.process_columns(raw_columns)
+            logger.info(f"Final count: {processed_data['metadata']['total_tweets']} tweets remaining")
             
             # Save processed tweets
             await self._save_processed_tweets(processed_data, date_str)
             
-            return processed_data['total_tweets']
+            return processed_data['metadata']['total_tweets']
             
         except Exception as e:
             log_error(logger, e, f"Failed to process tweets for date {date_str}")
@@ -145,6 +150,25 @@ class DataProcessor:
             log_error(logger, e, "Failed to load raw tweets")
             raise DataProcessingError(f"Raw tweet loading failed: {str(e)}")
             
+    def deduplicate(self, columns):
+        """Step 3.1: Remove duplicate tweets by ID"""
+        initial_total = sum(len(t) for t in columns.values())
+        seen_ids = set()
+        deduped = {}
+        
+        for col_id, tweets in columns.items():
+            unique = []
+            for t in tweets:
+                if t['id'] not in seen_ids:
+                    seen_ids.add(t['id'])
+                    unique.append(t)
+            deduped[col_id] = unique
+            logger.info(f"Column {col_id}: Deduped {len(tweets)}→{len(unique)}")
+            
+        deduped_total = sum(len(t) for t in deduped.values())
+        logger.info(f"Deduplication: {initial_total} → {deduped_total} tweets (-{initial_total - deduped_total})")
+        return deduped
+            
     def _remove_duplicates(self, tweets):
         """Remove duplicate tweets based on tweet ID"""
         try:
@@ -185,11 +209,15 @@ class DataProcessor:
             raise DataProcessingError(f"Tweet normalization failed: {str(e)}")
             
     def _process_raw_tweets(self, raw_columns):
-        """Process raw tweets by removing duplicates and normalizing text"""
+        """Add metadata to processed data"""
         try:
             processed_data = {
-                'total_tweets': 0,
-                'columns': {}
+                'metadata': {
+                    'processed_at': datetime.now().isoformat(),
+                    'columns_processed': len(raw_columns)
+                },
+                'columns': {},
+                'total_tweets': 0
             }
             
             for column_id, tweets in raw_columns.items():
@@ -239,27 +267,100 @@ class DataProcessor:
             return False
             
     async def _save_processed_tweets(self, processed_data, date_str):
-        """Save processed tweets with error handling"""
+        """Save processed tweets without combined file"""
         try:
-            self.processed_dir.mkdir(parents=True, exist_ok=True)
-            output_file = self.processed_dir / f'processed_tweets_{date_str}.json'
+            date_dir = self.processed_dir / date_str
+            date_dir.mkdir(parents=True, exist_ok=True)
             
-            with open(output_file, 'w') as f:
-                json.dump(processed_data, f, indent=2)
+            # Save individual column files with metadata
+            for col_id, tweets in processed_data['columns'].items():
+                col_data = {
+                    'metadata': {
+                        'processed_at': processed_data['metadata']['processed_at'],
+                        'column_id': col_id,
+                        'tweet_count': len(tweets)
+                    },
+                    'tweets': tweets
+                }
                 
-            logger.info(f"Saved {processed_data['total_tweets']} processed tweets across {len(processed_data['columns'])} columns")
+                col_file = date_dir / f'column_{col_id}.json'
+                with open(col_file, 'w') as f:
+                    json.dump(col_data, f, indent=2)
                 
+            logger.info(f"Saved {len(processed_data['columns'])} columns to {date_dir}")
+            
         except Exception as e:
             log_error(logger, e, f"Failed to save processed tweets for date {date_str}")
             raise DataProcessingError(f"Failed to save processed tweets: {str(e)}")
 
+    def process_columns(self, raw_columns):
+        """Core processing pipeline"""
+        processed = {}
+        
+        # Step 3.1: Deduplication
+        deduped = self.deduplicate(raw_columns)
+        
+        # Step 3.2-3.4: Text cleaning
+        cleaned = self.clean_tweets(deduped)
+        
+        # Step 3.5-3.6: Structured output
+        structured = self.structure_output(cleaned)
+        
+        return structured
+
+    def clean_tweets(self, columns):
+        """Steps 3.2-3.4: Text validation and normalization"""
+        valid_tweets = {}
+        initial_total = sum(len(t) for t in columns.values())
+        
+        for col_id, tweets in columns.items():
+            cleaned = []
+            for t in tweets:
+                if self._is_valid(t) and self._normalize(t):
+                    cleaned.append(t)
+            valid_tweets[col_id] = cleaned
+            logger.info(f"Column {col_id}: Cleaned {len(tweets)}→{len(cleaned)}")
+            
+        cleaned_total = sum(len(t) for t in valid_tweets.values())
+        logger.info(f"Cleaning: {initial_total} → {cleaned_total} tweets (-{initial_total - cleaned_total})")
+        return valid_tweets
+
+    def _is_valid(self, tweet):
+        """Check minimum text requirements"""
+        text = tweet.get('text', '')
+        return len(text.split()) >= self.min_words
+
+    def _normalize(self, tweet):
+        """Special character normalization"""
+        text = tweet['text']
+        # Add normalization logic from existing implementation
+        tweet['text'] = self.normalize_text(text)  
+        return True
+
+    def structure_output(self, columns):
+        """Steps 3.5-3.6: Create unified JSON structure with total count"""
+        total = sum(len(tweets) for tweets in columns.values())
+        return {
+            'metadata': {
+                'processed_at': datetime.now().isoformat(),
+                'columns_processed': len(columns),
+                'total_tweets': total
+            },
+            'columns': columns
+        }
+
 if __name__ == "__main__":
-    # Setup and run processor
+    # Setup logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
     processor = DataProcessor()
     
-    # Allow processing specific date from command line
+    # Get date from command line argument
     import sys
     date_to_process = sys.argv[1] if len(sys.argv) > 1 else None
     
-    # Run the async process_tweets function
+    # Run async processing
     asyncio.run(processor.process_tweets(date_to_process)) 
