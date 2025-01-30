@@ -514,8 +514,13 @@ class AlphaFilter:
                 chunk_tasks = [self.filter_content(item, category) for item in chunk]
                 chunk_results = await asyncio.gather(*chunk_tasks)
                 
-                # Add successful results
-                new_results = [r for r in chunk_results if r is not None]
+                # Add successful results with processing date
+                new_results = []
+                for r in chunk_results:
+                    if r is not None:
+                        r['processed_date'] = date_str  # Use date from input folder
+                        new_results.append(r)
+                
                 if new_results:
                     results.extend(new_results)
                     logger.info(f"Found {len(new_results)} new tweets in chunk {chunk_number}")
