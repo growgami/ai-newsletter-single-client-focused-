@@ -265,10 +265,14 @@ class AlphaFilter:
             
             # Check if same date
             if last_date == date_str:
-                # Check if all chunks done
-                all_complete = all(
-                    col_state.get('completed', False) 
-                    for col_state in state.get('columns_state', {}).values()
+            # Check if all chunks done - but only if we have columns to process
+                columns_state = state.get('columns_state', {})
+                if not columns_state:
+                    logger.info(f"No columns processed yet for {date_str}, starting processing")
+                else:
+                    all_complete = all(
+                        col_state.get('completed', False) 
+                        for col_state in columns_state.values()
                 )
                 if not all_complete:
                     # Not done, continue processing
