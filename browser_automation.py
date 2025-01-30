@@ -62,7 +62,44 @@ class BrowserAutomation:
         except Exception as e:
             log_error(logger, e, "Failed to initialize browser")
             raise BrowserError(f"Browser initialization failed: {str(e)}")
-            
+
+    @with_retry(RetryConfig(max_retries=3, base_delay=2.0, max_delay=30.0))
+    async def restart_browser(self):
+        """Safely close and restart the browser with retry logic"""
+        logger.info("Initiating browser restart sequence")
+        try:
+            # Store current session state before closing
+            if self.context:
+                try:
+                    await self.store_session()
+                    logger.info("Stored session state before restart")
+                except Exception as e:
+                    logger.warning(f"Failed to store session during restart: {str(e)}")
+
+            # Close existing browser instance
+            await self.close()
+            logger.info("Closed existing browser instance")
+
+            # Small delay to ensure clean shutdown
+            await asyncio.sleep(1)
+
+            # Initialize new browser instance
+            success = await self.init_browser()
+            if not success:
+                raise BrowserError("Failed to initialize new browser instance")
+
+            # Handle login with the new instance
+            success = await self.handle_login()
+            if not success:
+                raise BrowserError("Failed to login after browser restart")
+
+            logger.info("Browser restart completed successfully")
+            return True
+
+        except Exception as e:
+            log_error(logger, e, "Browser restart failed")
+            raise BrowserError(f"Failed to restart browser: {str(e)}")
+
     async def check_login_status(self):
         """Check if already logged in"""
         try:
@@ -197,42 +234,53 @@ class BrowserAutomation:
         except Exception as e:
             logger.error(f"Failed to store session: {str(e)}")
             
+    @with_retry(RetryConfig(max_retries=2, base_delay=1.0))
     async def close(self):
-        """Close browser resources gracefully"""
+        """Close browser resources gracefully with retry logic"""
+        logger.info("Initiating browser shutdown sequence")
         try:
             # Store session before closing if we have an active context
             if self.context:
                 try:
                     await self.store_session()
+                    logger.info("Session state stored successfully")
                 except Exception as e:
                     logger.warning(f"Failed to store session during shutdown: {str(e)}")
 
-            # Close in reverse order with small delays
+            # Close in reverse order with small delays and verification
             if self.page:
                 try:
                     await self.page.close()
                     await asyncio.sleep(0.5)
+                    logger.debug("Page closed successfully")
                 except Exception as e:
-                    logger.debug(f"Page close error (expected during interrupt): {str(e)}")
+                    logger.warning(f"Error closing page: {str(e)}")
+                finally:
+                    self.page = None
 
             if self.context:
                 try:
                     await self.context.close()
                     await asyncio.sleep(0.5)
+                    logger.debug("Context closed successfully")
                 except Exception as e:
-                    logger.debug(f"Context close error (expected during interrupt): {str(e)}")
+                    logger.warning(f"Error closing context: {str(e)}")
+                finally:
+                    self.context = None
 
             if self.browser:
                 try:
                     await self.browser.close()
+                    logger.debug("Browser closed successfully")
                 except Exception as e:
-                    logger.debug(f"Browser close error (expected during interrupt): {str(e)}")
+                    logger.warning(f"Error closing browser: {str(e)}")
+                finally:
+                    self.browser = None
 
             logger.info("Browser resources closed successfully")
+            return True
 
         except Exception as e:
-            # Log but don't raise during shutdown
-            logger.warning(f"Error during browser shutdown: {str(e)}")
-            # Force process termination if needed
-            import sys
-            sys.exit(0) 
+            logger.error(f"Error during browser shutdown: {str(e)}")
+            # Don't raise, but return False to indicate failure
+            return False 
