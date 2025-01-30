@@ -207,19 +207,34 @@ class AlphaFilter:
             filtered_date_dir = self.filtered_dir / date_str
             filtered_date_dir.mkdir(parents=True, exist_ok=True)
             
-            # Check summary file first
+            # Load existing summary file
             summary_file = filtered_date_dir / 'summary.json'
-            completed_columns = set()
+            existing_summary = {
+                'date': date_str,
+                'metadata': {
+                    'total_processed': 0,
+                    'processing_start': datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat(),
+                    'alpha_threshold': self.alpha_threshold,
+                    'risk_threshold': self.risk_threshold,
+                    'columns_processed': 0,
+                    'total_tweets_found': 0,
+                    'tweets_per_column': {}
+                }
+            }
+            
             if summary_file.exists():
                 try:
                     with open(summary_file, 'r') as f:
-                        summary_data = json.load(f)
-                        for col_id, stats in summary_data['metadata']['tweets_per_column'].items():
-                            if stats['chunks_processed'] == stats['total_chunks']:
-                                completed_columns.add(col_id)
-                                logger.info(f"Column {col_id} already fully processed ({stats['chunks_processed']}/{stats['total_chunks']} chunks)")
+                        existing_summary = json.load(f)
                 except Exception as e:
                     logger.warning(f"Error reading summary file: {str(e)}")
+            
+            # Check for completed columns
+            completed_columns = set()
+            for col_id, stats in existing_summary['metadata']['tweets_per_column'].items():
+                if stats.get('chunks_processed', 0) == stats.get('total_chunks', 0):
+                    completed_columns.add(col_id)
+                    logger.info(f"Column {col_id} already fully processed")
             
             # Load all column files
             column_files = list(date_dir.glob('column_*.json'))
@@ -253,11 +268,11 @@ class AlphaFilter:
                         col_data = json.load(f)
                         content_items = col_data.get('tweets', [])
                         
-                        data['columns'][column_id] = content_items
-                        data['metadata']['total_items'] += len(content_items)
-                        data['metadata']['columns_processed'] += 1
-                        
-                        logger.info(f"Loaded {len(content_items)} items from column {column_id}")
+                        if content_items:
+                            data['columns'][column_id] = content_items
+                            data['metadata']['total_items'] += len(content_items)
+                            data['metadata']['columns_processed'] += 1
+                            logger.info(f"Loaded {len(content_items)} items from column {column_id}")
                         
                 except Exception as e:
                     logger.error(f"Failed to load {col_file.name}: {str(e)}")
@@ -271,6 +286,11 @@ class AlphaFilter:
             
             # Process one column at a time
             for col_id in data['columns'].keys():
+                # Double check column not completed (in case completed during processing)
+                if col_id in completed_columns:
+                    logger.info(f"Skipping column {col_id} - already completed")
+                    continue
+                    
                 logger.info(f"Processing column {col_id}")
                 
                 try:
@@ -279,7 +299,8 @@ class AlphaFilter:
                         data['columns'][col_id],
                         self.categories.get(col_id),
                         col_id,
-                        date_str
+                        date_str,
+                        data  # Pass the data dictionary
                     )
                     
                     # Add results to total
@@ -293,43 +314,64 @@ class AlphaFilter:
                 # Delay between columns
                 await asyncio.sleep(5)
             
-            # Save summary metadata
-            summary_data = {
-                'date': date_str,
-                'metadata': {
+            # Load latest summary file
+            if summary_file.exists():
+                try:
+                    with open(summary_file, 'r') as f:
+                        existing_summary = json.load(f)
+                except Exception as e:
+                    logger.error(f"Error reading final summary: {str(e)}")
+            
+            # Check if all columns are complete
+            tweets_per_column = existing_summary.get('metadata', {}).get('tweets_per_column', {})
+            all_columns_complete = True
+            
+            for col_id in data['columns'].keys():
+                col_stats = tweets_per_column.get(col_id, {})
+                if col_stats.get('chunks_processed', 0) != col_stats.get('total_chunks', 0):
+                    all_columns_complete = False
+                    break
+            
+            if all_columns_complete:
+                # All columns are done, safe to reset summary
+                logger.info("All columns complete, resetting summary")
+                existing_summary = {
+                    'date': date_str,
+                    'metadata': {
+                        'total_processed': data['metadata']['total_items'],
+                        'processing_start': data['metadata']['processing_start'],
+                        'processing_end': datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat(),
+                        'alpha_threshold': self.alpha_threshold,
+                        'risk_threshold': self.risk_threshold,
+                        'columns_processed': len(data['columns']),
+                        'total_tweets_found': len(all_scores),
+                        'tweets_per_column': {}  # Reset progress tracking
+                    }
+                }
+            else:
+                # Some columns still in progress, preserve tweets_per_column
+                logger.info("Some columns still in progress, preserving progress data")
+                existing_summary['metadata'].update({
                     'total_processed': data['metadata']['total_items'],
                     'processing_start': data['metadata']['processing_start'],
                     'processing_end': datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat(),
                     'alpha_threshold': self.alpha_threshold,
                     'risk_threshold': self.risk_threshold,
-                    'columns_processed': len(data['columns']),
-                    'total_tweets_found': len(all_scores),
-                    'tweets_per_column': {}
-                }
-            }
+                    'columns_processed': len(tweets_per_column),
+                    'total_tweets_found': sum(
+                        stats.get('tweets_found', 0) 
+                        for stats in tweets_per_column.values()
+                    )
+                })
             
-            # Add per-column statistics
-            for col_id in data['columns'].keys():
-                try:
-                    col_file = filtered_date_dir / f'column_{col_id}.json'
-                    if col_file.exists():
-                        with open(col_file, 'r') as f:
-                            col_data = json.load(f)
-                            summary_data['metadata']['tweets_per_column'][col_id] = {
-                                'total_chunks': col_data['metadata']['total_chunks'],
-                                'chunks_processed': col_data['metadata']['chunks_processed'],
-                                'tweets_found': len(col_data['tweets'])
-                            }
-                except Exception as e:
-                    logger.error(f"Error reading column {col_id} stats: {str(e)}")
-            
-            with open(filtered_date_dir / 'summary.json', 'w') as f:
-                json.dump(summary_data, f, indent=2)
+            # Save updated summary
+            with open(summary_file, 'w') as f:
+                json.dump(existing_summary, f, indent=2)
                 
             logger.info(f"Alpha filtering complete. Found {len(all_scores)} tweets across {len(data['columns'])} columns.")
             logger.info(f"Results saved to {filtered_date_dir}")
             
-            return summary_data
+            return existing_summary
             
         except Exception as e:
             logger.error(f"Error processing content: {str(e)}")
@@ -343,6 +385,7 @@ class AlphaFilter:
             author = content.get('authorHandle', '')
             quoted_text = content.get('quotedContent', {}).get('text', '') if content.get('quotedContent') else ''
             reposted_text = content.get('repostedContent', {}).get('text', '') if content.get('repostedContent') else ''
+            url = content.get('url', '')  # Get URL from content
             
             if not tweet_text or not author:
                 logger.warning(f"Missing required content fields for ID {content.get('id', 'unknown')}")
@@ -356,6 +399,7 @@ class AlphaFilter:
             Content Details:
             Text: {tweet_text}
             Author: {author}
+            URL: {url}
             {f"Quoted content: {quoted_text}" if quoted_text else ""}
             {f"Reposted content: {reposted_text}" if reposted_text else ""}
     
@@ -384,6 +428,7 @@ class AlphaFilter:
             {{
                 "tweet": "{tweet_text}",
                 "author": "{author}",
+                "url": "{url}",
                 "quoted_content": "{quoted_text}",
                 "reposted_content": "{reposted_text}"
             }}
@@ -404,7 +449,7 @@ class AlphaFilter:
                 return None
             
             # Check for required content fields
-            required_fields = ['tweet', 'author']
+            required_fields = ['tweet', 'author', 'url']  # Added url to required fields
             if not all(key in result for key in required_fields):
                 raise ValueError(f"Missing required fields: {[k for k in required_fields if k not in result]}")
             
@@ -417,7 +462,20 @@ class AlphaFilter:
             logger.warning(f"Invalid response format: {str(e)}")
             raise
             
-    async def _process_column(self, content_items, category, col_id, date_str):
+    def _atomic_write_json(self, file_path: Path, data: dict):
+        """Atomically write JSON data to file"""
+        temp_file = file_path.with_suffix('.tmp')
+        try:
+            with open(temp_file, 'w') as f:
+                json.dump(data, f, indent=2)
+            temp_file.replace(file_path)  # Atomic on POSIX
+        except Exception as e:
+            logger.error(f"Error writing file {file_path}: {str(e)}")
+            if temp_file.exists():
+                temp_file.unlink()
+            raise
+
+    async def _process_column(self, content_items, category, col_id, date_str, data):
         """Process a single column's content"""
         try:
             logger.info(f"Starting column {col_id} ({len(content_items)} items)")
@@ -433,8 +491,20 @@ class AlphaFilter:
             chunk_size = 9  # Process 9 tweets at a time
             total_chunks = (len(content_items) + chunk_size - 1) // chunk_size
             
-            # Load or initialize summary data
-            summary_data = {}
+            # Load existing summary data
+            summary_data = {
+                'date': date_str,
+                'metadata': {
+                    'total_processed': 0,
+                    'processing_start': data['metadata']['processing_start'],
+                    'alpha_threshold': self.alpha_threshold,
+                    'risk_threshold': self.risk_threshold,
+                    'columns_processed': 0,
+                    'total_tweets_found': 0,
+                    'tweets_per_column': {}
+                }
+            }
+            
             if summary_file.exists():
                 try:
                     with open(summary_file, 'r') as f:
@@ -442,53 +512,18 @@ class AlphaFilter:
                 except Exception as e:
                     logger.warning(f"Error reading summary file: {str(e)}")
             
-            if not summary_data:
-                summary_data = {
-                    'date': date_str,
-                    'metadata': {
-                        'total_processed': 0,
-                        'processing_start': datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat(),
-                        'alpha_threshold': self.alpha_threshold,
-                        'risk_threshold': self.risk_threshold,
-                        'columns_processed': 0,
-                        'total_tweets_found': 0,
-                        'tweets_per_column': {}
-                    }
-                }
-            
-            # Check summary file first for accurate progress
+            # Get last processed chunk
             chunks_processed = 0
             col_stats = summary_data.get('metadata', {}).get('tweets_per_column', {}).get(col_id, {})
             if col_stats:
-                stored_total = col_stats.get('total_chunks', 0)
-                if stored_total == total_chunks:  # Only use if chunk count matches
-                    chunks_processed = col_stats.get('chunks_processed', 0)
-                    logger.info(f"Found progress in summary: chunk {chunks_processed}/{total_chunks}")
-            
-            # Initialize or load existing file
-            if output_file.exists():
-                with open(output_file, 'r') as f:
-                    file_data = json.load(f)
-                    results = file_data.get('tweets', [])
-                    
-                    # Only consider complete if we processed ALL chunks
-                    if chunks_processed >= total_chunks and total_chunks > 0:
-                        logger.info(f"Column {col_id} already fully processed ({chunks_processed}/{total_chunks} chunks)")
-                        return results
-                    else:
-                        logger.info(f"Resuming column {col_id} from chunk {chunks_processed + 1}/{total_chunks}")
-            else:
-                file_data = {
-                    'date': date_str,
-                    'column_id': col_id,
-                    'category': category,
-                    'tweets': results,
-                    'metadata': {
-                        'chunks_processed': chunks_processed,
-                        'total_chunks': total_chunks,
-                        'last_update': datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat()
-                    }
-                }
+                chunks_processed = col_stats.get('chunks_processed', 0)
+                
+                # Load existing results if any
+                if output_file.exists():
+                    with open(output_file, 'r') as f:
+                        file_data = json.load(f)
+                        results = file_data.get('tweets', [])
+                        logger.info(f"Loaded {len(results)} existing results")
             
             # Process remaining chunks
             for i in range(0, len(content_items), chunk_size):
@@ -516,36 +551,44 @@ class AlphaFilter:
                     results.extend(new_results)
                     logger.info(f"Found {len(new_results)} new tweets in chunk {chunk_number}")
                 
-                # Update file with new results and chunk progress
+                # Update progress in summary.json
                 chunks_processed = chunk_number
-                file_data.update({
-                    'tweets': results,
-                    'metadata': {
-                        'chunks_processed': chunks_processed,
-                        'total_chunks': total_chunks,
-                        'last_update': datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat(),
-                        'tweet_count': len(results)
-                    }
-                })
                 
-                # Save updated results to column file
-                with open(output_file, 'w') as f:
-                    json.dump(file_data, f, indent=2)
-                
-                # Update and save summary.json
+                # Update column stats while preserving other columns
                 summary_data['metadata']['tweets_per_column'][col_id] = {
                     'total_chunks': total_chunks,
                     'chunks_processed': chunks_processed,
                     'tweets_found': len(results)
                 }
-                summary_data['metadata']['total_tweets_found'] = sum(
-                    stats.get('tweets_found', 0) 
-                    for stats in summary_data['metadata']['tweets_per_column'].values()
-                )
-                summary_data['metadata']['processing_end'] = datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat()
                 
-                with open(summary_file, 'w') as f:
-                    json.dump(summary_data, f, indent=2)
+                # Update metadata
+                summary_data['metadata'].update({
+                    'total_processed': sum(len(content_items) for content_items in data['columns'].values()),
+                    'processing_start': data['metadata']['processing_start'],
+                    'processing_end': datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat(),
+                    'alpha_threshold': self.alpha_threshold,
+                    'risk_threshold': self.risk_threshold,
+                    'columns_processed': len(data['columns']),
+                    'total_tweets_found': sum(
+                        stats.get('tweets_found', 0) 
+                        for stats in summary_data['metadata']['tweets_per_column'].values()
+                    )
+                })
+                
+                # Save summary progress atomically
+                self._atomic_write_json(summary_file, summary_data)
+                
+                # Update output file with new results atomically
+                file_data = {
+                    'date': date_str,
+                    'column_id': col_id,
+                    'category': category,
+                    'tweets': results,
+                    'metadata': {
+                        'last_update': datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat()
+                    }
+                }
+                self._atomic_write_json(output_file, file_data)
                 
                 logger.info(f"Saved progress: chunk {chunk_number}/{total_chunks}, total tweets: {len(results)}")
                 
