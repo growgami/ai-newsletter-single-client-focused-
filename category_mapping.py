@@ -1,72 +1,76 @@
 """Category mappings and configurations for the news bot"""
 
 from typing import Dict, List
+import os
 
 # Mapping of column IDs to category names
 CATEGORY_MAP: Dict[str, str] = {
-    '0': 'NEAR Ecosystem',
-    '1': 'Polkadot Ecosystem',
-    '2': 'Arbitrum Ecosystem',
-    '3': 'IOTA Ecosystem',
-    '4': 'AI Agents',
-    '5': 'DefAI'
+    '0': '$TRUMP',
+    '1': 'Stablecoins',
+    '2': 'SEI',
+    '3': 'SUI',
+    '4': 'Marketing',
+    '5': 'Yappers'
 }
 
 # Mapping of category names to Telegram channel keys
 TELEGRAM_CHANNEL_MAP: Dict[str, str] = {
-    'NEAR Ecosystem': 'near',
-    'Polkadot Ecosystem': 'polkadot',
-    'Arbitrum Ecosystem': 'arbitrum',
-    'IOTA Ecosystem': 'iota',
-    'AI Agents': 'ai_agent',
-    'DefAI': 'defai'
+    '$TRUMP': 'TRUMP',
+    'Stablecoins': 'STABLECOINS',
+    'SEI': 'SEI',
+    'SUI': 'SUI',
+    'Marketing': 'MARKETING',
+    'Yappers': 'YAPPERS'
 }
 
 # Category-specific focus areas for news filtering
 CATEGORY_FOCUS: Dict[str, List[str]] = {
-    'NEAR Ecosystem': [
-        'Protocol Development & Infrastructure',
-        'DeFi and Smart Contract Innovations',
-        'Cross-chain Integrations & Bridges',
-        'Developer Tools & SDKs',
-        'Ecosystem Growth & Adoption',
-        'AI & Web3 Integration'
+    '$TRUMP': [
+        'Political Crypto Movements',
+        'Meme Coin Dynamics',
+        'Election-related Developments',
+        'Celebrity Crypto Endorsements',
+        'Regulatory Impacts'
     ],
-    'Polkadot Ecosystem': [
-        'Parachain Development & Integration',
-        'Cross-chain Messaging (XCM)',
-        'Governance & Treasury',
-        'Technical Infrastructure',
-        'Ecosystem Partnerships'
+    'Stablecoins': [
+        'Stability Mechanisms',
+        'Regulatory Developments',
+        'Cross-chain Compatibility',
+        'Adoption Metrics',
+        'Reserve Audits'
     ],
-    'Arbitrum Ecosystem': [
-        'Layer 2 Scaling Solutions',
-        'Protocol Deployments & TVL',
-        'Governance & DAO Activities',
-        'Infrastructure Development',
-        'Ecosystem Growth Initiatives'
+    'SEI': [
+        'Network Upgrades',
+        'DeFi Ecosystem Growth',
+        'Developer Activity',
+        'Token Utility Expansions',
+        'Strategic Partnerships'
     ],
-    'IOTA Ecosystem': [
-        'Protocol Development & Updates',
-        'Smart Contract Platform',
-        'IoT Integration & Use Cases',
-        'Network Security & Performance',
-        'Industry Partnerships'
+    'SUI': [
+        'Move Language Innovations',
+        'Scalability Solutions',
+        'Wallet Ecosystem',
+        'NFT Developments',
+        'Governance Proposals'
     ],
-    'AI Agents': [
-        'Agent Development Frameworks',
-        'AI-Blockchain Integration',
-        'Autonomous Systems & DAOs',
-        'Multi-agent Systems',
-        'AI Safety & Governance',
-        'Real-world Applications'
+    'Marketing': [
+        'Viral Campaigns',
+        'Community Engagement',
+        'Partnership Announcements',
+        'Exchange Listings',
+        'Social Media Trends'
     ],
-    'DefAI': [
-        'Decentralized AI Infrastructure',
-        'AI Model Training & Deployment',
-        'Data Privacy & Security',
-        'Tokenized AI Systems',
-        'Cross-chain AI Solutions'
+    'Yappers': [
+        'Influencer Activity Patterns',          # Tracking post frequency/volume trends
+        'Alpha Leaks & Market Signals',          # Early project hints and market-moving claims
+        'Viral Thread Analysis',                 # Break down most-shared content structures
+        'Cross-Platform Influence',              # Track Twitter/Farcaster/YouTube dominance
+        'Community Sentiment Drivers',           # Identify key opinion leaders shaping narratives
+        'Emerging Thought Leaders',              # Monitor rising stars in crypto commentary
+        'Controversy & Debate Impact',           # Measure FUD/FOMO generation effectiveness
+        'Project Endorsement Patterns',          # Track shilling cycles and partnership reveals
+        'Technical Analysis Trends',             # Popular charting methods and indicators
+        'Regulatory Commentary'                  # Influence on policy perception
     ]
 }
 
@@ -103,4 +107,39 @@ EMOJI_MAP: Dict[str, str] = {
     
     # Default
     'Other Updates': '📌'
-} 
+}
+
+CATEGORY_KEYWORDS: Dict[str, List[str]] = {
+    'TRUMP Coin': [
+        'trump', 'maga', 'donald trump', 'trump coin',
+        'trump token', 'maga coin', 'political crypto'
+    ],
+    'Stablecoins': [
+        'stablecoin', 'usdt', 'usdc', 'dai', 'frax',
+        'peg', 'collateral', 'price stability'
+    ],
+    'SEI Economy': [
+        'sei network', 'sei blockchain', 'sei ecosystem',
+        'sei token', 'sei chain', 'cosmos sei'
+    ],
+    'SUI Economy': [
+        'sui network', 'sui blockchain', 'sui ecosystem',
+        'sui token', 'sui chain', 'mysten labs'
+    ],
+    'Marketing': [
+        'partnership', 'ama', 'community update',
+        'branding', 'campaign', 'outreach'
+    ],
+    'Yappers': [
+        'community discussion', 'governance talk',
+        'ecosystem debate', 'town hall', 'community chat'
+    ]
+}
+
+def validate_telegram_config():
+    missing = []
+    for category, channel_id in TELEGRAM_CHANNEL_MAP.items():
+        if not channel_id:
+            missing.append(category)
+    if missing:
+        raise ValueError(f"Missing Telegram channel IDs for: {', '.join(missing)}") 
