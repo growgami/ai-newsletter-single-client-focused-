@@ -41,8 +41,9 @@ class AlphaFilter:
     def __init__(self, config):
         self.config = config
         self.data_dir = Path('data')
-        self.processed_dir = self.data_dir / 'processed'
-        self.filtered_dir = self.data_dir / 'filtered' / 'alpha_filtered'
+        self.processed_dir = self.data_dir / 'processed'  # Input from raw tweets
+        self.filtered_dir = self.data_dir / 'filtered' / 'alpha_filtered'  # Output without date subfolder
+        self.state_file = self.filtered_dir / 'state.json'  # Track processing state
         self.is_shutting_down = False
         
         # Initialize both API clients
@@ -64,6 +65,67 @@ class AlphaFilter:
         
         self.circuit_breaker = CircuitBreaker()
         
+        # Create output directory
+        self.filtered_dir.mkdir(parents=True, exist_ok=True)
+
+    def _load_state(self):
+        """Load processing state from file"""
+        if self.state_file.exists():
+            try:
+                with open(self.state_file, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"Error loading state file: {str(e)}")
+        return {
+            'last_processed_date': None,
+            'columns_state': {}  # Track progress per column
+        }
+
+    def _clear_column_files(self):
+        """Clear all column output files for fresh processing"""
+        try:
+            for file in self.filtered_dir.glob('column_*.json'):
+                file.unlink()
+            logger.info("Cleared existing column files for new date")
+        except Exception as e:
+            logger.error(f"Error clearing column files: {str(e)}")
+
+    def _get_column_state(self, date_str, col_id):
+        """Get processing state for a specific column"""
+        state = self._load_state()
+        return state.get('columns_state', {}).get(str(col_id), {
+            'completed': False,
+            'last_chunk': 0,
+            'total_chunks': 0
+        })
+
+    def _update_column_state(self, date_str, col_id, chunk_number, total_chunks, completed=False):
+        """Update processing state for a specific column"""
+        state = self._load_state()
+        
+        # Initialize column state if needed while preserving existing states
+        if 'columns_state' not in state:
+            state['columns_state'] = {}
+        
+        # Update only the specific column while keeping others intact
+        state['columns_state'][str(col_id)] = {
+            'completed': completed,
+            'last_chunk': chunk_number,
+            'total_chunks': total_chunks
+        }
+        
+        # Update date without affecting columns_state
+        state['last_processed_date'] = date_str
+        
+        self._save_state(state)
+
+    def _save_state(self, state):
+        """Save processing state to file"""
+        try:
+            self._atomic_write_json(self.state_file, state)
+        except Exception as e:
+            logger.error(f"Error saving state file: {str(e)}")
+
     async def _try_deepseek_request(self, prompt):
         """Attempt to get a response from Deepseek"""
         try:
@@ -188,7 +250,7 @@ class AlphaFilter:
                 return None
             
     async def process_content(self, date_str=None):
-        """Process all content for a given date"""
+        """Process content for a given date"""
         try:
             if not date_str:
                 current_time = datetime.now(zoneinfo.ZoneInfo("UTC"))
@@ -197,51 +259,46 @@ class AlphaFilter:
                 
             logger.info(f"Processing content for date: {date_str}")
             
-            # Load from date-specific directory
+            # Load state and check date
+            state = self._load_state()
+            last_date = state.get('last_processed_date')
+            
+            # Check if same date
+            if last_date == date_str:
+                # Check if all chunks done
+                all_complete = all(
+                    col_state.get('completed', False) 
+                    for col_state in state.get('columns_state', {}).values()
+                )
+                if not all_complete:
+                    # Not done, continue processing
+                    logger.info(f"Incomplete chunks found for {date_str}, continuing processing")
+                else:
+                    # Done, skip
+                    logger.info(f"All chunks completed for {date_str}, skipping")
+                    return state
+            else:
+                # Not same date
+                logger.info(f"New date detected (last: {last_date}, current: {date_str})")
+                # Clear columns_state and update date
+                state['columns_state'] = {}
+                state['last_processed_date'] = date_str
+                self._save_state(state)
+                logger.info("Starting fresh processing for new date")
+            
+            # Load from date-specific input directory
             date_dir = self.processed_dir / date_str
             if not date_dir.exists():
                 logger.error(f"Processed directory not found: {date_dir}")
-                return
-            
-            # Create filtered output directory
-            filtered_date_dir = self.filtered_dir / date_str
-            filtered_date_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Load existing summary file
-            summary_file = filtered_date_dir / 'summary.json'
-            existing_summary = {
-                'date': date_str,
-                'metadata': {
-                    'total_processed': 0,
-                    'processing_start': datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat(),
-                    'alpha_threshold': self.alpha_threshold,
-                    'risk_threshold': self.risk_threshold,
-                    'columns_processed': 0,
-                    'total_tweets_found': 0,
-                    'tweets_per_column': {}
-                }
-            }
-            
-            if summary_file.exists():
-                try:
-                    with open(summary_file, 'r') as f:
-                        existing_summary = json.load(f)
-                except Exception as e:
-                    logger.warning(f"Error reading summary file: {str(e)}")
-            
-            # Check for completed columns
-            completed_columns = set()
-            for col_id, stats in existing_summary['metadata']['tweets_per_column'].items():
-                if stats.get('chunks_processed', 0) == stats.get('total_chunks', 0):
-                    completed_columns.add(col_id)
-                    logger.info(f"Column {col_id} already fully processed")
+                return state
             
             # Load all column files
             column_files = list(date_dir.glob('column_*.json'))
             if not column_files:
                 logger.error(f"No column files found in {date_dir}")
-                return
+                return state
             
+            # Initialize processing data
             data = {
                 'date': date_str,
                 'columns': {},
@@ -259,11 +316,6 @@ class AlphaFilter:
                 try:
                     column_id = col_file.stem.split('_')[1]
                     
-                    # Skip if column is already completed
-                    if column_id in completed_columns:
-                        logger.info(f"Skipping column {column_id} - already completed")
-                        continue
-                    
                     with open(col_file, 'r') as f:
                         col_data = json.load(f)
                         content_items = col_data.get('tweets', [])
@@ -277,30 +329,25 @@ class AlphaFilter:
                 except Exception as e:
                     logger.error(f"Failed to load {col_file.name}: {str(e)}")
                     continue
-                
+            
             if data['metadata']['total_items'] == 0:
                 logger.warning("No content found to process")
-                return
+                return state
             
             logger.info(f"Processing {data['metadata']['total_items']} items from {len(data['columns'])} columns")
             
             # Process one column at a time
             for col_id in data['columns'].keys():
-                # Double check column not completed (in case completed during processing)
-                if col_id in completed_columns:
-                    logger.info(f"Skipping column {col_id} - already completed")
-                    continue
-                    
                 logger.info(f"Processing column {col_id}")
                 
                 try:
-                    # Process single column without timeout
+                    # Process single column
                     results = await self._process_column(
                         data['columns'][col_id],
                         self.categories.get(col_id),
                         col_id,
                         date_str,
-                        data  # Pass the data dictionary
+                        data
                     )
                     
                     # Add results to total
@@ -314,64 +361,8 @@ class AlphaFilter:
                 # Delay between columns
                 await asyncio.sleep(5)
             
-            # Load latest summary file
-            if summary_file.exists():
-                try:
-                    with open(summary_file, 'r') as f:
-                        existing_summary = json.load(f)
-                except Exception as e:
-                    logger.error(f"Error reading final summary: {str(e)}")
-            
-            # Check if all columns are complete
-            tweets_per_column = existing_summary.get('metadata', {}).get('tweets_per_column', {})
-            all_columns_complete = True
-            
-            for col_id in data['columns'].keys():
-                col_stats = tweets_per_column.get(col_id, {})
-                if col_stats.get('chunks_processed', 0) != col_stats.get('total_chunks', 0):
-                    all_columns_complete = False
-                    break
-            
-            if all_columns_complete:
-                # All columns are done, safe to reset summary
-                logger.info("All columns complete, resetting summary")
-                existing_summary = {
-                    'date': date_str,
-                    'metadata': {
-                        'total_processed': data['metadata']['total_items'],
-                        'processing_start': data['metadata']['processing_start'],
-                        'processing_end': datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat(),
-                        'alpha_threshold': self.alpha_threshold,
-                        'risk_threshold': self.risk_threshold,
-                        'columns_processed': len(data['columns']),
-                        'total_tweets_found': len(all_scores),
-                        'tweets_per_column': {}  # Reset progress tracking
-                    }
-                }
-            else:
-                # Some columns still in progress, preserve tweets_per_column
-                logger.info("Some columns still in progress, preserving progress data")
-                existing_summary['metadata'].update({
-                    'total_processed': data['metadata']['total_items'],
-                    'processing_start': data['metadata']['processing_start'],
-                    'processing_end': datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat(),
-                    'alpha_threshold': self.alpha_threshold,
-                    'risk_threshold': self.risk_threshold,
-                    'columns_processed': len(tweets_per_column),
-                    'total_tweets_found': sum(
-                        stats.get('tweets_found', 0) 
-                        for stats in tweets_per_column.values()
-                    )
-                })
-            
-            # Save updated summary
-            with open(summary_file, 'w') as f:
-                json.dump(existing_summary, f, indent=2)
-                
-            logger.info(f"Alpha filtering complete. Found {len(all_scores)} tweets across {len(data['columns'])} columns.")
-            logger.info(f"Results saved to {filtered_date_dir}")
-            
-            return existing_summary
+            logger.info(f"Alpha filtering complete. Found {len(all_scores)} tweets across {len(data['columns'])} columns")
+            return state
             
         except Exception as e:
             logger.error(f"Error processing content: {str(e)}")
@@ -481,63 +472,37 @@ class AlphaFilter:
             logger.info(f"Starting column {col_id} ({len(content_items)} items)")
             results = []
             
-            # Setup output files
-            output_dir = self.filtered_dir / date_str
-            output_dir.mkdir(parents=True, exist_ok=True)
-            output_file = output_dir / f'column_{col_id}.json'
-            summary_file = output_dir / 'summary.json'
+            # Setup output file (no date subfolder)
+            output_file = self.filtered_dir / f'column_{col_id}.json'
             
             # Calculate total chunks
             chunk_size = 9  # Process 9 tweets at a time
             total_chunks = (len(content_items) + chunk_size - 1) // chunk_size
             
-            # Load existing summary data
-            summary_data = {
-                'date': date_str,
-                'metadata': {
-                    'total_processed': 0,
-                    'processing_start': data['metadata']['processing_start'],
-                    'alpha_threshold': self.alpha_threshold,
-                    'risk_threshold': self.risk_threshold,
-                    'columns_processed': 0,
-                    'total_tweets_found': 0,
-                    'tweets_per_column': {}
-                }
-            }
-            
-            if summary_file.exists():
+            # Load existing tweets if any
+            existing_tweets = []
+            if output_file.exists():
                 try:
-                    with open(summary_file, 'r') as f:
-                        summary_data = json.load(f)
-                except Exception as e:
-                    logger.warning(f"Error reading summary file: {str(e)}")
-            
-            # Get last processed chunk
-            chunks_processed = 0
-            col_stats = summary_data.get('metadata', {}).get('tweets_per_column', {}).get(col_id, {})
-            if col_stats:
-                chunks_processed = col_stats.get('chunks_processed', 0)
-                
-                # Load existing results if any
-                if output_file.exists():
                     with open(output_file, 'r') as f:
                         file_data = json.load(f)
-                        results = file_data.get('tweets', [])
-                        logger.info(f"Loaded {len(results)} existing results")
+                        existing_tweets = file_data.get('tweets', [])
+                        logger.info(f"Loaded {len(existing_tweets)} existing tweets from column {col_id}")
+                except Exception as e:
+                    logger.error(f"Error loading existing tweets: {str(e)}")
             
-            # Process remaining chunks
-            for i in range(0, len(content_items), chunk_size):
+            # Get column state
+            col_state = self._get_column_state(date_str, col_id)
+            start_chunk = col_state['last_chunk']
+            
+            # Process chunks
+            for i in range(start_chunk * chunk_size, len(content_items), chunk_size):
                 if self.is_shutting_down:
                     logger.info("Graceful shutdown requested, saving progress...")
+                    self._update_column_state(date_str, col_id, i // chunk_size, total_chunks)
                     break
 
                 chunk = content_items[i:i+chunk_size]
                 chunk_number = i // chunk_size + 1
-                
-                # Skip already processed chunks
-                if chunk_number <= chunks_processed:
-                    logger.debug(f"Skipping already processed chunk {chunk_number}/{total_chunks}")
-                    continue
                 
                 logger.info(f"Processing chunk {chunk_number}/{total_chunks} in column {col_id}")
                 
@@ -551,52 +516,30 @@ class AlphaFilter:
                     results.extend(new_results)
                     logger.info(f"Found {len(new_results)} new tweets in chunk {chunk_number}")
                 
-                # Update progress in summary.json
-                chunks_processed = chunk_number
-                
-                # Update column stats while preserving other columns
-                summary_data['metadata']['tweets_per_column'][col_id] = {
-                    'total_chunks': total_chunks,
-                    'chunks_processed': chunks_processed,
-                    'tweets_found': len(results)
-                }
-                
-                # Update metadata
-                summary_data['metadata'].update({
-                    'total_processed': sum(len(content_items) for content_items in data['columns'].values()),
-                    'processing_start': data['metadata']['processing_start'],
-                    'processing_end': datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat(),
-                    'alpha_threshold': self.alpha_threshold,
-                    'risk_threshold': self.risk_threshold,
-                    'columns_processed': len(data['columns']),
-                    'total_tweets_found': sum(
-                        stats.get('tweets_found', 0) 
-                        for stats in summary_data['metadata']['tweets_per_column'].values()
-                    )
-                })
-                
-                # Save summary progress atomically
-                self._atomic_write_json(summary_file, summary_data)
-                
-                # Update output file with new results atomically
+                # Update output file with accumulated results
                 file_data = {
-                    'date': date_str,
-                    'column_id': col_id,
-                    'category': category,
-                    'tweets': results,
+                    'tweets': existing_tweets + results,  # Combine existing and new tweets
                     'metadata': {
-                        'last_update': datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat()
+                        'total_tweets': len(existing_tweets) + len(results),
+                        'last_update': datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat(),
+                        'last_processed_date': date_str,
+                        'processing_dates': data.get('processing_dates', [date_str])
                     }
                 }
                 self._atomic_write_json(output_file, file_data)
                 
-                logger.info(f"Saved progress: chunk {chunk_number}/{total_chunks}, total tweets: {len(results)}")
+                # Update state after each chunk
+                self._update_column_state(date_str, col_id, chunk_number, total_chunks)
                 
-                # Delay between chunks
+                # Rate limiting between chunks
                 if i + chunk_size < len(content_items):
                     await asyncio.sleep(2)
             
-            logger.info(f"Completed column {col_id} with {len(results)} total tweets")
+            # Mark column as completed if not shutdown
+            if not self.is_shutting_down:
+                self._update_column_state(date_str, col_id, total_chunks, total_chunks, completed=True)
+                logger.info(f"Completed column {col_id} with {len(results)} new tweets")
+            
             return results
             
         except Exception as e:
@@ -609,6 +552,46 @@ class AlphaFilter:
         logger.info("Cleaning up and saving state...")
         # Any additional cleanup can be added here
 
+    def _get_unprocessed_dates(self):
+        """Get list of dates with unprocessed raw tweets"""
+        processed_dates = set(self._load_state().get('processing_dates', []))
+        raw_dates = set()
+        
+        # Find all date folders in processed directory
+        for date_dir in self.processed_dir.glob('*'):
+            if date_dir.is_dir() and date_dir.name.isdigit() and len(date_dir.name) == 8:
+                raw_dates.add(date_dir.name)
+        
+        # Return dates that haven't been fully processed
+        return sorted(list(raw_dates - processed_dates))
+
+    async def process_all_dates(self):
+        """Process all unprocessed dates"""
+        try:
+            unprocessed_dates = self._get_unprocessed_dates()
+            if not unprocessed_dates:
+                logger.info("No new dates to process")
+                return
+            
+            logger.info(f"Found {len(unprocessed_dates)} dates to process: {', '.join(unprocessed_dates)}")
+            
+            for date_str in unprocessed_dates:
+                if self.is_shutting_down:
+                    break
+                    
+                try:
+                    logger.info(f"Processing date: {date_str}")
+                    await self.process_content(date_str)
+                    await asyncio.sleep(5)  # Brief pause between dates
+                except Exception as e:
+                    logger.error(f"Error processing date {date_str}: {str(e)}")
+                    continue
+            
+            logger.info("Completed processing all available dates")
+            
+        except Exception as e:
+            logger.error(f"Error in process_all_dates: {str(e)}")
+
 if __name__ == "__main__":
     import signal
     import sys
@@ -618,9 +601,6 @@ if __name__ == "__main__":
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
-    
-    # Get date to process - either from args or use today's date
-    date_to_process = sys.argv[1] if len(sys.argv) > 1 else datetime.now().strftime('%Y%m%d')
     
     # Load config
     import os
@@ -639,13 +619,19 @@ if __name__ == "__main__":
     # Setup signal handlers
     def signal_handler(sig, frame):
         logger.info(f"Received signal {sig}, initiating graceful shutdown...")
-        asyncio.create_task(alpha_filter.cleanup())
+        alpha_filter.is_shutting_down = True
     
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
     try:
-        asyncio.run(alpha_filter.process_content(date_to_process))
+        # If date provided, process only that date
+        if len(sys.argv) > 1:
+            date_to_process = sys.argv[1]
+            asyncio.run(alpha_filter.process_content(date_to_process))
+        else:
+            # Otherwise process all unprocessed dates
+            asyncio.run(alpha_filter.process_all_dates())
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt received, waiting for cleanup...")
         # Let the cleanup finish
