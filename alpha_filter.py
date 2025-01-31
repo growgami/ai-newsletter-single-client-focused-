@@ -136,7 +136,7 @@ class AlphaFilter:
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.1,
                     response_format={"type": "json_object"},
-                    max_tokens=500
+                    max_tokens=4096
                 ),
                 timeout=3  # 3 second timeout
             )
@@ -163,7 +163,7 @@ class AlphaFilter:
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.1,
                     response_format={"type": "json_object"},
-                    max_tokens=500
+                    max_tokens=4096
                 ),
                 timeout=10  # 10 second timeout
             )
