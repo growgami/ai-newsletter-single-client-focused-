@@ -1,8 +1,11 @@
+"""Error handling and retry utilities"""
+
 import logging
 import asyncio
-from functools import wraps
+import functools
 import traceback
-from typing import Callable, TypeVar, ParamSpec
+from datetime import datetime
+from typing import Type, Tuple, Optional, Callable, TypeVar, ParamSpec
 
 # Type variables for generic function signatures
 T = TypeVar('T')  # Return type
@@ -11,78 +14,43 @@ P = ParamSpec('P')  # Parameters
 logger = logging.getLogger(__name__)
 
 class RetryConfig:
-    def __init__(self, max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 60.0):
+    def __init__(
+        self, 
+        max_retries: int = 3,
+        base_delay: float = 1.0,
+        max_delay: float = 30.0,
+        backoff_factor: float = 2.0,
+        retry_on: Optional[Tuple[Type[Exception], ...]] = None
+    ):
         self.max_retries = max_retries
         self.base_delay = base_delay
         self.max_delay = max_delay
+        self.backoff_factor = backoff_factor
+        self.retry_on = retry_on or (Exception,)
+        self.attempt_count = 0
+        self.last_attempt = None
 
-def with_retry(retry_config: RetryConfig = RetryConfig()):
-    """
-    Decorator that adds retry logic with exponential backoff to async functions.
-    
-    Args:
-        retry_config: Configuration for retry behavior
-    """
-    def decorator(func: Callable[P, T]) -> Callable[P, T]:
-        @wraps(func)
-        async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-            last_exception = None
-            
-            for attempt in range(retry_config.max_retries):
-                try:
-                    return await func(*args, **kwargs)
-                    
-                except Exception as e:
-                    last_exception = e
-                    delay = min(
-                        retry_config.base_delay * (2 ** attempt),
-                        retry_config.max_delay
-                    )
-                    
-                    logger.warning(
-                        f"Attempt {attempt + 1}/{retry_config.max_retries} failed for {func.__name__}. "
-                        f"Error: {str(e)}. Retrying in {delay:.1f}s..."
-                    )
-                    
-                    # Log detailed error info for debugging
-                    logger.debug(f"Detailed error:\n{traceback.format_exc()}")
-                    
-                    if attempt < retry_config.max_retries - 1:
-                        await asyncio.sleep(delay)
-                    
-            # If we get here, all retries failed
-            logger.error(
-                f"All {retry_config.max_retries} attempts failed for {func.__name__}. "
-                f"Last error: {str(last_exception)}"
-            )
-            raise last_exception
-            
-        return wrapper
-    return decorator
+    def reset(self):
+        """Reset retry counter"""
+        self.attempt_count = 0
+        self.last_attempt = None
+
+    def get_next_delay(self) -> float:
+        """Calculate next retry delay using exponential backoff"""
+        self.attempt_count += 1
+        delay = min(
+            self.base_delay * (self.backoff_factor ** (self.attempt_count - 1)),
+            self.max_delay
+        )
+        self.last_attempt = datetime.now()
+        return delay
 
 class APIError(Exception):
-    """Base exception for API-related errors"""
-    pass
-
-class NetworkError(Exception):
-    """Exception for network-related errors"""
-    pass
-
-class BrowserError(Exception):
-    """Exception for browser automation errors"""
-    pass
-
-class DataProcessingError(Exception):
-    """Exception for data processing errors"""
-    pass
-
-class TelegramError(Exception):
-    """Exception for Telegram-related errors"""
+    """Custom exception for API-related errors"""
     pass
 
 def log_error(logger: logging.Logger, error: Exception, context: str = None):
-    """
-    Centralized error logging function
+    """Centralized error logging with context and stack trace
     
     Args:
         logger: Logger instance to use
@@ -99,4 +67,59 @@ def log_error(logger: logging.Logger, error: Exception, context: str = None):
     log_message += f"Message: {error_msg}\n"
     log_message += f"Stack Trace:\n{stack_trace}"
     
-    logger.error(log_message) 
+    logger.error(log_message)
+    if hasattr(error, '__traceback__'):
+        logger.debug("Detailed traceback:", exc_info=error)
+
+def with_retry(config: RetryConfig):
+    """Retry decorator with exponential backoff
+    
+    Args:
+        config: RetryConfig instance with retry settings
+    """
+    def decorator(func: Callable[P, T]) -> Callable[P, T]:
+        @functools.wraps(func)
+        async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+            config.reset()
+            last_error = None
+
+            for attempt in range(config.max_retries):
+                try:
+                    if attempt > 0:
+                        delay = config.get_next_delay()
+                        logger.info(f"Retry attempt {attempt + 1}/{config.max_retries}, waiting {delay:.1f}s")
+                        await asyncio.sleep(delay)
+                        
+                    return await func(*args, **kwargs)
+                    
+                except config.retry_on as e:
+                    last_error = e
+                    logger.warning(
+                        f"Attempt {attempt + 1} failed for {func.__name__}. "
+                        f"Error: {str(e)}"
+                    )
+                    # Log detailed error info for debugging
+                    logger.debug(f"Detailed error:\n{traceback.format_exc()}")
+                    continue
+                    
+            logger.error(f"All {config.max_retries} retry attempts failed")
+            raise last_error
+
+        return wrapper
+    return decorator
+
+class NetworkError(Exception):
+    """Exception for network-related errors"""
+    pass
+
+class BrowserError(Exception):
+    """Exception for browser automation errors"""
+    pass
+
+class DataProcessingError(Exception):
+    """Exception for data processing errors"""
+    pass
+
+class TelegramError(Exception):
+    """Exception for Telegram-related errors"""
+    pass 
