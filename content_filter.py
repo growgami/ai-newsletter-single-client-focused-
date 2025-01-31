@@ -188,43 +188,58 @@ class ContentFilter:
             return None
 
     async def _extract_summary(self, tweet_text, reposted_text='', quoted_text=''):
-        """Extract the most relevant and concise part of the tweet"""
+        """Extract an accurate and informative summary from all content sources"""
         try:
             await self.circuit_breaker.check()
             
+            # Log the tweet being processed
+            logger.info(f"\nProcessing tweet: {tweet_text[:100]}...")
+            if quoted_text:
+                logger.info(f"With quoted content: {quoted_text[:100]}...")
+            if reposted_text:
+                logger.info(f"With reposted content: {reposted_text[:100]}...")
+            
             prompt = f"""
-            Create a clear and informative summary of the content. Follow these rules:
+            Create an accurate and complete summary that captures the key information from ALL provided content. Follow these rules:
 
-            1. ANALYZE ALL CONTENT:
-            - Main tweet: {tweet_text}
-            - Quoted content: {quoted_text}
-            - Reposted content: {reposted_text}
+            1. CONTENT ANALYSIS:
+            Main tweet: {tweet_text}
+            Quoted content: {quoted_text}
+            Reposted content: {reposted_text}
 
-            2. PRIORITIZE THIS INFORMATION (in order):
-            - Numbers and metrics (prices, TVL, volume, percentages)
-            - Price predictions and targets
-            - Market updates and movements
-            - Project announcements and deadlines
-            - Development updates
-            - Community news
-
-            3. SUMMARY RULES:
-            - Must be a COMPLETE sentence or statement
-            - Include ALL important numbers and metrics
-            - Keep token symbols and price targets exactly as written
-            - Can combine and rephrase for clarity
+            2. SUMMARY REQUIREMENTS:
+            - Capture the MAIN POINT accurately
+            - Include CONTEXT from all sources
+            - Preserve ALL important details:
+                * Numbers and metrics (exact values)
+                * Token symbols (e.g., $BTC, $ETH)
+                * Time-sensitive information
+                * Key announcements
+                * Price levels and predictions
+            - Keep technical terms unchanged
+            - Can combine information from all sources
             - Maximum 200 characters
-            - Focus on actionable information
+
+            3. ACCURACY RULES:
+            - Do not infer or assume information
+            - Keep exact numbers and metrics
+            - Maintain original meaning
+            - Include source context if critical
+            - Preserve market sentiment
+            - Keep relationships between numbers
 
             4. EXAMPLES:
-            Input: "Have you applied for the @SeiNetwork Creator Fund Round 5, anon? It ends 01/27/24 at 12:00 PM EST!"
-            Output: "SEI Network Creator Fund Round 5 applications close January 27th at 12:00 PM EST"
+            Tweet: "🚀 Just in: $TOSHI listed on Coinbase"
+            Quoted: "TOSHI doing ~$750m daily volume ($1b+ total), mcap at ~$650m"
+            Output: "$TOSHI listed on Coinbase, reaches $750M daily volume, $1B+ total volume, $650M market cap"
 
-            Input: "$SEI (Update) the $0.33 support level has held up quite well so far. As long as this support remains intact, expecting continuation towards $0.40-0.45 range."
-            Output: "$SEI holding strong at $0.33 support, targets $0.40-0.45 range on continuation"
+            Tweet: "Hyperliquid update"
+            Reposted: "5 days left of the month and Hyperliquid just achieved its highest monthly perps volume reaching $157b ($156b in Dec) Also printing its third highest weekly volume at nearly $40b"
+            Output: "Hyperliquid hits record $157B monthly perps volume (up from $156B), with $40B weekly volume"
 
-            Input: "I bet on $SEI reaching $5 by early summer. BTC.D is ready to nuke soon, and promising alts will likely pump hard in the coming months."
-            Output: "$SEI price target $5 by early summer, bullish on alt season with declining BTC dominance"
+            Tweet: "Jupiter protocol news!"
+            Quoted: "$JUP has been ranging between $1.30 - $0.70 for 9 months. 50% of protocol fees now going to JUP buybacks, 30% total supply burned"
+            Output: "Jupiter allocates 50% of protocol fees to JUP buybacks, 30% supply burned, token ranging $0.70-$1.30"
 
             Return ONLY the summary text, no explanations.
             """
@@ -259,8 +274,11 @@ class ContentFilter:
                     extracted = response.strip().strip('"').strip()
                     
                     # Verify the extracted text has substance
-                    if len(extracted) < 10 or extracted.endswith('...'):
-                        logger.warning("Extracted text too short or incomplete")
+                    if len(extracted) < 10:
+                        logger.warning(f"❌ Tweet removed: Summary too short (length: {len(extracted)})")
+                        return self._create_fallback_summary(tweet_text)
+                    if extracted.endswith('...'):
+                        logger.warning("❌ Tweet removed: Summary incomplete (ends with ...)")
                         return self._create_fallback_summary(tweet_text)
                         
                     # Verify all numbers and symbols are preserved
@@ -268,9 +286,10 @@ class ContentFilter:
                     numbers_symbols = re.findall(r'\$[\d.]+ *[KMBkmb]?|\$[A-Za-z]+|\d+(?:\.\d+)?%?', source_text)
                     
                     if numbers_symbols and not any(num in extracted for num in numbers_symbols):
-                        logger.warning("Important numbers or symbols missing from extraction")
+                        logger.warning(f"❌ Tweet removed: Missing important numbers/symbols: {', '.join(numbers_symbols)}")
                         return self._create_fallback_summary(tweet_text)
                     
+                    logger.info(f"✅ Summary created: {extracted}")
                     return extracted
                     
                 except asyncio.TimeoutError:
@@ -390,6 +409,32 @@ class ContentFilter:
             if len(items) <= 1:
                 return items
 
+            logger.info(f"\n📊 Analyzing {len(items)} tweets for duplicates...")
+            
+            # First check if these are metric updates
+            is_metric_update, keep_indices = self._is_metric_update(items)
+            if is_metric_update:
+                kept_items = [items[idx] for idx in keep_indices]
+                removed_count = len(items) - len(kept_items)
+                
+                # Log detailed metric update comparison
+                logger.info("\n🔄 Metric Update Analysis:")
+                logger.info("Found sequence of related metric updates:")
+                for idx, item in enumerate(items):
+                    metrics = self._extract_metrics(item['text'])
+                    status = "✅ KEPT (most recent)" if idx in keep_indices else "❌ REMOVED (older)"
+                    logger.info(f"{status} - {item['text'][:100]}...")
+                    if metrics:
+                        logger.info(f"   └─ Metrics: {', '.join(['$' + str(m) for m in metrics])}")
+                    if 'original_date' in item:
+                        logger.info(f"   └─ Date: {item['original_date']}")
+                
+                logger.info(f"\n📝 Summary: Kept most recent update, removed {removed_count} older versions")
+                return kept_items
+
+            # For non-metric duplicates, show detailed analysis
+            logger.info("\n🔍 Content Similarity Analysis:")
+            
             prompt = """Analyze these tweets and determine if they contain the same news/information.
 For tweets reporting metrics or numbers (like prices, supply, TVL etc):
 1. If they show the same type of metric increasing/decreasing over time, keep only the most recent update
@@ -412,11 +457,18 @@ Return ONLY a JSON object in this exact format:
     "are_duplicates": boolean,
     "keep_item_ids": [integer array of indices to keep],
     "reason": "string explaining the decision (mention if metric update)",
-    "confidence": float between 0 and 1
+    "confidence": float between 0 and 1,
+    "comparison": [
+        {{
+            "id": integer,
+            "status": "kept" or "removed",
+            "reason": "string explaining why this specific tweet was kept or removed"
+        }}
+    ]
 }}""".format(json.dumps([{
                 'id': idx,
                 'text': item['text'],
-                'date': item.get('created_at', ''),
+                'date': item.get('original_date', ''),
                 'url': item['url']
             } for idx, item in enumerate(items)], indent=2))
 
@@ -431,7 +483,26 @@ Return ONLY a JSON object in this exact format:
                         # Keep only the selected items
                         kept_items = [items[idx] for idx in result['keep_item_ids'] if idx < len(items)]
                         if kept_items:  # Only log if we actually kept some items
-                            logger.info(f"Duplicate detection: Keeping {len(kept_items)} out of {len(items)} items. Reason: {result.get('reason', 'No reason provided')}")
+                            removed_count = len(items) - len(kept_items)
+                            if removed_count > 0:
+                                logger.info("\n📋 Duplicate Analysis Results:")
+                                logger.info(f"Overall decision: {result.get('reason', 'No reason provided')}")
+                                logger.info(f"Confidence: {result.get('confidence', 0):.2f}")
+                                
+                                # Show detailed comparison for each tweet
+                                logger.info("\nDetailed Tweet Analysis:")
+                                for comparison in result.get('comparison', []):
+                                    tweet_id = comparison.get('id', 0)
+                                    if tweet_id < len(items):
+                                        status_emoji = "✅" if comparison.get('status') == "kept" else "❌"
+                                        logger.info(f"\n{status_emoji} Tweet {tweet_id + 1}:")
+                                        logger.info(f"   Content: {items[tweet_id]['text'][:100]}...")
+                                        logger.info(f"   Status: {comparison.get('status', 'unknown').upper()}")
+                                        logger.info(f"   Reason: {comparison.get('reason', 'No specific reason provided')}")
+                                        if 'original_date' in items[tweet_id]:
+                                            logger.info(f"   Date: {items[tweet_id]['original_date']}")
+                                
+                                logger.info(f"\n📝 Summary: Removed {removed_count} duplicate tweets, kept {len(kept_items)} unique tweets")
                             return kept_items
                 except (json.JSONDecodeError, KeyError, TypeError, IndexError) as e:
                     logger.error(f"Failed to parse duplicate detection response: {str(e)}")
@@ -465,11 +536,23 @@ Return ONLY a JSON object in this exact format:
                         extracted_text = await self._extract_summary(tweet_text, reposted_text, quoted_text)
                         
                         if extracted_text:
+                            # Format the processed_date into YYYY-MM-DD format
+                            processed_date = item.get('processed_date', '')
+                            if processed_date:
+                                try:
+                                    # Convert YYYYMMDD to YYYY-MM-DD format
+                                    date_obj = datetime.strptime(processed_date, '%Y%m%d')
+                                    formatted_date = date_obj.strftime('%Y-%m-%d')
+                                except ValueError:
+                                    formatted_date = ''
+                            else:
+                                formatted_date = ''
+                            
                             filtered_item = {
                                 'author': item.get('author', ''),
                                 'text': extracted_text,
                                 'url': item.get('url', ''),
-                                'created_at': item.get('created_at', '')
+                                'original_date': formatted_date
                             }
                             chunk_filtered.append(filtered_item)
                             
