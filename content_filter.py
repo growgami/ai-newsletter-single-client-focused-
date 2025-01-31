@@ -187,59 +187,43 @@ class ContentFilter:
             logger.warning(f"OpenAI request failed: {str(e)}")
             return None
 
-    async def _extract_summary(self, tweet_text, reposted_text='', quoted_text=''):
+    async def _extract_summary(self, tweet_text, reposted_text='', quoted_text='', category=''):
         """Extract an accurate and informative summary from all content sources"""
         try:
             await self.circuit_breaker.check()
             
-            # Log the tweet being processed
-            logger.info(f"\nProcessing tweet: {tweet_text[:100]}...")
-            if quoted_text:
-                logger.info(f"With quoted content: {quoted_text[:100]}...")
-            if reposted_text:
-                logger.info(f"With reposted content: {reposted_text[:100]}...")
-            
             prompt = f"""
-            Create an accurate and complete summary that captures the key information from ALL provided content. Follow these rules:
+            Create a clear, factual summary combining key information from ALL provided content. Follow these rules:
 
-            1. CONTENT ANALYSIS:
+            1. CONTENT TO ANALYZE:
             Main tweet: {tweet_text}
             Quoted content: {quoted_text}
             Reposted content: {reposted_text}
 
             2. SUMMARY REQUIREMENTS:
-            - Capture the MAIN POINT accurately
-            - Include CONTEXT from all sources
-            - Preserve ALL important details:
-                * Numbers and metrics (exact values)
-                * Token symbols (e.g., $BTC, $ETH)
-                * Time-sensitive information
-                * Key announcements
-                * Price levels and predictions
-            - Keep technical terms unchanged
-            - Can combine information from all sources
-            - Maximum 200 characters
+            - Use 6-12 words only
+            - Include most critical information related to the tweets {category}
+            - Keep exact numbers and symbols
+            - Preserve token names ($BTC, $ETH)
+            - Focus on key metrics/events
+            - Remove unnecessary words
 
-            3. ACCURACY RULES:
-            - Do not infer or assume information
-            - Keep exact numbers and metrics
-            - Maintain original meaning
-            - Include source context if critical
-            - Preserve market sentiment
-            - Keep relationships between numbers
+            3. WRITING STYLE:
+            - Use confident, direct statements
+            - Remove uncertain language (might, could, maybe)
+            - Present market events as facts
+            - Keep technical terms unchanged
+            - Maintain professional tone
 
             4. EXAMPLES:
-            Tweet: "🚀 Just in: $TOSHI listed on Coinbase"
-            Quoted: "TOSHI doing ~$750m daily volume ($1b+ total), mcap at ~$650m"
-            Output: "$TOSHI listed on Coinbase, reaches $750M daily volume, $1B+ total volume, $650M market cap"
+            Input: "Looks like $TOSHI might get listed on Coinbase soon! Hearing rumors of ~$750m daily volume"
+            Output: "$TOSHI reaches $750M Coinbase daily volume"
 
-            Tweet: "Hyperliquid update"
-            Reposted: "5 days left of the month and Hyperliquid just achieved its highest monthly perps volume reaching $157b ($156b in Dec) Also printing its third highest weekly volume at nearly $40b"
-            Output: "Hyperliquid hits record $157B monthly perps volume (up from $156B), with $40B weekly volume"
+            Input: "probably gonna see Hyperliquid hit new ATH this month, volume almost at $157b (was $156b in Dec)"
+            Output: "Hyperliquid hits $157B monthly volume record"
 
-            Tweet: "Jupiter protocol news!"
-            Quoted: "$JUP has been ranging between $1.30 - $0.70 for 9 months. 50% of protocol fees now going to JUP buybacks, 30% total supply burned"
-            Output: "Jupiter allocates 50% of protocol fees to JUP buybacks, 30% supply burned, token ranging $0.70-$1.30"
+            Input: "Jupiter protocol news! $JUP has been ranging between $1.30 - $0.70 for 9 months. 50% of protocol fees now going to JUP buybacks, 30% total supply burned"
+            Output: "Jupiter allocates 50% fees for buybacks"
 
             Return ONLY the summary text, no explanations.
             """
@@ -273,20 +257,18 @@ class ContentFilter:
                     # Clean up response
                     extracted = response.strip().strip('"').strip()
                     
-                    # Verify the extracted text has substance
-                    if len(extracted) < 10:
-                        logger.warning(f"❌ Tweet removed: Summary too short (length: {len(extracted)})")
+                    # Verify word count (5-8 words)
+                    word_count = len(extracted.split())
+                    if not (6 <= word_count <= 12):
+                        logger.warning(f"❌ Summary removed: Word count {word_count} outside 5-8 range")
                         return self._create_fallback_summary(tweet_text)
-                    if extracted.endswith('...'):
-                        logger.warning("❌ Tweet removed: Summary incomplete (ends with ...)")
-                        return self._create_fallback_summary(tweet_text)
-                        
+                    
                     # Verify all numbers and symbols are preserved
                     source_text = ' '.join([t for t in [tweet_text, reposted_text, quoted_text] if t])
                     numbers_symbols = re.findall(r'\$[\d.]+ *[KMBkmb]?|\$[A-Za-z]+|\d+(?:\.\d+)?%?', source_text)
                     
                     if numbers_symbols and not any(num in extracted for num in numbers_symbols):
-                        logger.warning(f"❌ Tweet removed: Missing important numbers/symbols: {', '.join(numbers_symbols)}")
+                        logger.warning(f"❌ Summary removed: Missing important numbers/symbols: {', '.join(numbers_symbols)}")
                         return self._create_fallback_summary(tweet_text)
                     
                     logger.info(f"✅ Summary created: {extracted}")
@@ -307,7 +289,7 @@ class ContentFilter:
             return self._create_fallback_summary(tweet_text)
             
         except Exception as e:
-            logger.error(f"Error extracting text: {str(e)}")
+            logger.error(f"Error in summary extraction: {str(e)}")
             return self._create_fallback_summary(tweet_text)
 
     def _create_fallback_summary(self, text):
@@ -502,7 +484,7 @@ Return ONLY a JSON object in this exact format:
                                         if 'original_date' in items[tweet_id]:
                                             logger.info(f"   Date: {items[tweet_id]['original_date']}")
                                 
-                                logger.info(f"\n📝 Summary: Removed {removed_count} duplicate tweets, kept {len(kept_items)} unique tweets")
+                                logger.info(f"\n�� Summary: Removed {removed_count} duplicate tweets, kept {len(kept_items)} unique tweets")
                             return kept_items
                 except (json.JSONDecodeError, KeyError, TypeError, IndexError) as e:
                     logger.error(f"Failed to parse duplicate detection response: {str(e)}")
