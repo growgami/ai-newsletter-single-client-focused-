@@ -26,51 +26,64 @@ TELEGRAM_CHANNEL_MAP: Dict[str, str] = {
 # Category-specific focus areas for news filtering
 CATEGORY_FOCUS: Dict[str, List[str]] = {
     '$TRUMP': [
-        'Political Crypto Movements',
-        'Meme Coin Dynamics',
-        'Election-related Developments',
-        'Celebrity Crypto Endorsements',
-        'Regulatory Impacts'
+        'Meme cryptocurrency launched in 2023',
+        'Built on Ethereum blockchain as an ERC-20 token',
+        'Named after former US President Donald Trump',
+        'Trading primarily on decentralized exchanges',
+        'High social media and political event correlation',
+        'Part of broader political token ecosystem',
+        'Community driven by Trump supporters and crypto traders',
+        'Known for high volatility during political events'
     ],
     'Stablecoins': [
-        'Stability Mechanisms',
-        'Regulatory Developments',
-        'Cross-chain Compatibility',
-        'Adoption Metrics',
-        'Reserve Audits'
+        'Digital tokens designed to maintain fixed value (usually $1)',
+        'Types include fiat-backed, crypto-backed, and algorithmic',
+        'Core infrastructure for crypto trading and DeFi',
+        'Major players: USDT (Tether), USDC (Circle), DAI (MakerDAO)',
+        'Used for trading, savings, payments, and cross-border transfers',
+        'Subject to increasing regulatory scrutiny worldwide',
+        'Critical for market liquidity and price stability',
+        'Backbone of crypto-fiat on/off ramps'
     ],
     'SEI': [
-        'Network Upgrades',
-        'DeFi Ecosystem Growth',
-        'Developer Activity',
-        'Token Utility Expansions',
-        'Strategic Partnerships'
+        'Layer-1 blockchain optimized for trading applications',
+        'Built using Cosmos SDK with custom consensus mechanism',
+        'Features parallel transaction processing (PPOR)',
+        'Native built-in orderbook functionality',
+        'Specialized for high-throughput DeFi applications',
+        'Uses proof-of-stake consensus mechanism',
+        'Integrated with Cosmos IBC for cross-chain operations',
+        'Launched mainnet in 2023 with focus on DeFi scalability'
     ],
     'SUI': [
-        'Move Language Innovations',
-        'Scalability Solutions',
-        'Wallet Ecosystem',
-        'NFT Developments',
-        'Governance Proposals'
+        'Layer-1 blockchain developed by Mysten Labs',
+        'Uses Move programming language for smart contracts',
+        'Horizontal scaling through parallel transaction processing',
+        'Object-centric data model for efficient storage',
+        'Implements Narwhal and Bullshark consensus',
+        'Focus on NFTs and gaming applications',
+        'Features dynamic gas fees and fast finality',
+        'Launched mainnet in May 2023'
     ],
     'Marketing': [
-        'Viral Campaigns',
-        'Community Engagement',
-        'Partnership Announcements',
-        'Exchange Listings',
-        'Social Media Trends'
+        'Crypto marketing encompasses social media, content, and community',
+        'Key channels include Twitter, Telegram, Discord, and YouTube',
+        'Focus on community building and token awareness',
+        'Involves influencer partnerships and AMAs',
+        'Requires compliance with varying regulatory restrictions',
+        'Emphasizes organic growth and community engagement',
+        'Utilizes both traditional and crypto-native strategies',
+        'Critical for project visibility and adoption'
     ],
     'Yappers': [
-        'Influencer Activity Patterns',          # Tracking post frequency/volume trends
-        'Alpha Leaks & Market Signals',          # Early project hints and market-moving claims
-        'Viral Thread Analysis',                 # Break down most-shared content structures
-        'Cross-Platform Influence',              # Track Twitter/Farcaster/YouTube dominance
-        'Community Sentiment Drivers',           # Identify key opinion leaders shaping narratives
-        'Emerging Thought Leaders',              # Monitor rising stars in crypto commentary
-        'Controversy & Debate Impact',           # Measure FUD/FOMO generation effectiveness
-        'Project Endorsement Patterns',          # Track shilling cycles and partnership reveals
-        'Technical Analysis Trends',             # Popular charting methods and indicators
-        'Regulatory Commentary'                  # Influence on policy perception
+        'Crypto social media influencers and thought leaders',
+        'Known for sharing market analysis and project reviews',
+        'Range from anonymous to public personalities',
+        'Significant impact on retail trader sentiment',
+        'Platform presence across Twitter, YouTube, and Telegram',
+        'Often early adopters of new projects and trends',
+        'Mix of technical analysis and fundamental research',
+        'Important for project discovery and adoption'
     ]
 }
 
