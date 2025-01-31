@@ -8,6 +8,7 @@ import asyncio
 from openai import AsyncOpenAI
 from collections import defaultdict
 from category_mapping import CATEGORY_MAP, CATEGORY_FOCUS
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -131,15 +132,17 @@ class NewsFilter:
 
     def _build_prompt(self, tweets, category):
         """Build prompt for categorizing tweets into dynamic subcategories"""
-        # Get category focus areas from category mapping
-        focus_areas = CATEGORY_FOCUS.get(category, [])
-        focus_list = '\n'.join([f'- {area}' for area in focus_areas])
+        # Get category description from mapping
+        category_desc = CATEGORY_FOCUS.get(category, [])
+        category_context = '\n'.join([f'- {desc}' for desc in category_desc])
         
         return f"""
-        Analyze and categorize these tweets for {category} into 2-4 logical subcategories.
-        
-        Focus areas for {category}:
-        {focus_list}
+        You are analyzing tweets for the {category} category. First, validate each tweet's relevance using this category context:
+
+        CATEGORY CONTEXT:
+        {category_context}
+
+        Then, group relevant tweets into 2-4 logical subcategories. Exclude any tweets that don't match the category context.
 
         TWEETS TO ANALYZE:
         {json.dumps(tweets, indent=2)}
@@ -158,11 +161,13 @@ class NewsFilter:
         }}
 
         Rules:
-        1. Use clear, descriptive subcategory names
-        2. Each tweet must be in exactly one subcategory
-        3. Preserve exact tweet text and metadata
-        4. Output must match the format of this example:
+        1. ONLY include tweets that clearly relate to {category} based on the category context
+        2. Create 2-4 clear, descriptive subcategories for the relevant tweets
+        3. Each relevant tweet must be in exactly one subcategory
+        4. Preserve exact tweet text and metadata
+        5. Irrelevant tweets should be excluded completely
 
+        Example Output Structure:
         {{
             "SUI": {{
                 "Project Launches": [
@@ -194,15 +199,15 @@ class NewsFilter:
                 data = json.load(f)
             
             category = list(data.keys())[0]
-            tweets = data[category]['tweets']
+            original_tweets = data[category]['tweets']
             
-            if not tweets:
+            if not original_tweets:
                 logger.warning(f"No tweets found in column {column_file.name}")
                 return False
             
-            logger.info(f"Processing {len(tweets)} tweets from {category}")
+            logger.info(f"Processing {len(original_tweets)} tweets from {category}")
             
-            prompt = self._build_prompt(tweets, category)
+            prompt = self._build_prompt(original_tweets, category)
             response = await self._api_request(prompt)
             
             if response:
@@ -225,6 +230,19 @@ class NewsFilter:
                     if not isinstance(subcategories, dict) or not subcategories:
                         logger.error(f"Invalid subcategories format: {subcategories}")
                         return False
+                    
+                    # Count total filtered tweets
+                    filtered_tweets = sum(len(tweets) for tweets in subcategories.values())
+                    filtered_out = len(original_tweets) - filtered_tweets
+                    
+                    # Log filtering results
+                    logger.info(f"📊 Filtering Results for {category}:")
+                    logger.info(f"   • Original tweets: {len(original_tweets)}")
+                    logger.info(f"   • Kept tweets: {filtered_tweets}")
+                    logger.info(f"   • Filtered out: {filtered_out}")
+                    logger.info(f"   • Subcategories created: {len(subcategories)}")
+                    for subcat, tweets in subcategories.items():
+                        logger.info(f"     - {subcat}: {len(tweets)} tweets")
                     
                     # Check each subcategory has required tweet fields
                     for subcat, tweets in subcategories.items():
@@ -297,6 +315,19 @@ class NewsFilter:
             logger.error(f"Error in process_all: {str(e)}")
 
 if __name__ == "__main__":
+    # Setup logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler()
+        ]
+    )
+    
+    # Reduce external library logging
+    logging.getLogger('httpx').setLevel(logging.WARNING)
+    logging.getLogger('openai').setLevel(logging.WARNING)
+    
     # Configuration setup
     import os
     from dotenv import load_dotenv
@@ -310,4 +341,10 @@ if __name__ == "__main__":
     
     # Run processor
     filter = NewsFilter(config)
-    asyncio.run(filter.process_all())
+    try:
+        asyncio.run(filter.process_all())
+    except KeyboardInterrupt:
+        logger.info("\nShutdown requested... exiting gracefully")
+    except Exception as e:
+        logger.error(f"\nUnexpected error: {str(e)}")
+        sys.exit(1)
