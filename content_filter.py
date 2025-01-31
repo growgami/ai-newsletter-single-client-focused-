@@ -140,99 +140,249 @@ class ContentFilter:
     async def _try_deepseek_request(self, prompt):
         """Attempt to get a response from Deepseek"""
         try:
+            # Add 3 second timeout for Deepseek
             response = await asyncio.wait_for(
                 self.deepseek_client.chat.completions.create(
                     model="deepseek-chat",
                     messages=[{"role": "user", "content": prompt}],
-                    temperature=1.0,
-                    response_format={"type": "json_object"},
+                    temperature=0.3,
                     max_tokens=500
                 ),
-                timeout=3
+                timeout=3  # 3 second timeout
             )
             
             if not response.choices:
+                logger.warning("Deepseek response contains no choices")
                 return None
                 
-            content = response.choices[0].message.content
+            return response.choices[0].message.content.strip()
             
-            # Validate JSON structure
-            try:
-                result = json.loads(content)
-                required_fields = ['are_duplicates', 'keep_item_ids', 'reason', 'confidence']
-                if not all(field in result for field in required_fields):
-                    return None
-                return content
-            except json.JSONDecodeError:
-                return None
-            
-        except (asyncio.TimeoutError, Exception):
+        except asyncio.TimeoutError:
+            logger.warning("Deepseek request timed out after 3 seconds")
+            return None
+        except Exception as e:
+            logger.warning(f"Deepseek request failed: {str(e)}")
             return None
 
     async def _try_openai_request(self, prompt):
         """Attempt to get a response from OpenAI"""
         try:
+            # Add 10 second timeout for OpenAI
             response = await asyncio.wait_for(
                 self.openai_client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[{"role": "user", "content": prompt}],
-                    temperature=1.0,
-                    response_format={"type": "json_object"},
+                    temperature=0.3,
                     max_tokens=500
                 ),
-                timeout=10
+                timeout=10  # 10 second timeout
             )
             
-            content = response.choices[0].message.content
+            return response.choices[0].message.content.strip()
             
-            # Validate JSON structure
-            try:
-                result = json.loads(content)
-                required_fields = ['are_duplicates', 'keep_item_ids', 'reason', 'confidence']
-                if not all(field in result for field in required_fields):
-                    return None
-                return content
-            except json.JSONDecodeError:
-                return None
-            
-        except (asyncio.TimeoutError, Exception):
+        except asyncio.TimeoutError:
+            logger.warning("OpenAI request timed out after 10 seconds")
+            return None
+        except Exception as e:
+            logger.warning(f"OpenAI request failed: {str(e)}")
             return None
 
     async def _extract_summary(self, tweet_text, reposted_text='', quoted_text=''):
-        """Extract relevant parts of the tweet"""
+        """Extract the most relevant and concise part of the tweet"""
         try:
+            await self.circuit_breaker.check()
+            
             prompt = f"""
-            Extract the most relevant part of this tweet. Keep it word-for-word, no paraphrasing.
+            Create a clear and informative summary of the content. Follow these rules:
 
-            Tweet Content: {tweet_text}
-            Reposted Content: {reposted_text}
-            Quoted Content: {quoted_text}
+            1. ANALYZE ALL CONTENT:
+            - Main tweet: {tweet_text}
+            - Quoted content: {quoted_text}
+            - Reposted content: {reposted_text}
 
-            Return ONLY the extracted text, no other text or explanation.
+            2. PRIORITIZE THIS INFORMATION (in order):
+            - Numbers and metrics (prices, TVL, volume, percentages)
+            - Price predictions and targets
+            - Market updates and movements
+            - Project announcements and deadlines
+            - Development updates
+            - Community news
+
+            3. SUMMARY RULES:
+            - Must be a COMPLETE sentence or statement
+            - Include ALL important numbers and metrics
+            - Keep token symbols and price targets exactly as written
+            - Can combine and rephrase for clarity
+            - Maximum 200 characters
+            - Focus on actionable information
+
+            4. EXAMPLES:
+            Input: "Have you applied for the @SeiNetwork Creator Fund Round 5, anon? It ends 01/27/24 at 12:00 PM EST!"
+            Output: "SEI Network Creator Fund Round 5 applications close January 27th at 12:00 PM EST"
+
+            Input: "$SEI (Update) the $0.33 support level has held up quite well so far. As long as this support remains intact, expecting continuation towards $0.40-0.45 range."
+            Output: "$SEI holding strong at $0.33 support, targets $0.40-0.45 range on continuation"
+
+            Input: "I bet on $SEI reaching $5 by early summer. BTC.D is ready to nuke soon, and promising alts will likely pump hard in the coming months."
+            Output: "$SEI price target $5 by early summer, bullish on alt season with declining BTC dominance"
+
+            Return ONLY the summary text, no explanations.
             """
             
-            response = await self._try_deepseek_request(prompt)
-            if not response:
-                response = await self._try_openai_request(prompt)
-                
-            if response:
-                # Clean up response - remove quotes and extra whitespace
-                extracted = response.strip().strip('"').strip()
-                
-                # Verify the extracted text is actually in any of the sources
-                all_text = [tweet_text, reposted_text, quoted_text]
-                all_text = ' '.join([t for t in all_text if t])
-                
-                if extracted.lower() not in all_text.lower():
-                    return tweet_text[:100]  # Fallback to first 100 chars
+            # Retry configuration
+            max_retries = 3
+            base_delay = 2  # Start with 2 second delay
+            
+            for attempt in range(max_retries):
+                try:
+                    # First try Deepseek
+                    logger.debug(f"Attempt {attempt + 1}: Trying Deepseek")
+                    response = await self._try_deepseek_request(prompt)
                     
-                return extracted
-                
-            return tweet_text[:100]  # Fallback to truncated original
+                    # If Deepseek fails, try OpenAI
+                    if response is None:
+                        logger.debug(f"Attempt {attempt + 1}: Deepseek failed, trying OpenAI")
+                        response = await self._try_openai_request(prompt)
+                        
+                    # If both failed, try next attempt or use fallback
+                    if response is None:
+                        if attempt < max_retries - 1:
+                            delay = base_delay * (2 ** attempt)  # 2s, 4s, 8s
+                            logger.info(f"Both APIs failed. Retrying in {delay} seconds...")
+                            await asyncio.sleep(delay)
+                            continue
+                        else:
+                            logger.warning(f"All attempts failed after {max_retries} retries")
+                            return self._create_fallback_summary(tweet_text)
+                    
+                    # Clean up response
+                    extracted = response.strip().strip('"').strip()
+                    
+                    # Verify the extracted text has substance
+                    if len(extracted) < 10 or extracted.endswith('...'):
+                        logger.warning("Extracted text too short or incomplete")
+                        return self._create_fallback_summary(tweet_text)
+                        
+                    # Verify all numbers and symbols are preserved
+                    source_text = ' '.join([t for t in [tweet_text, reposted_text, quoted_text] if t])
+                    numbers_symbols = re.findall(r'\$[\d.]+ *[KMBkmb]?|\$[A-Za-z]+|\d+(?:\.\d+)?%?', source_text)
+                    
+                    if numbers_symbols and not any(num in extracted for num in numbers_symbols):
+                        logger.warning("Important numbers or symbols missing from extraction")
+                        return self._create_fallback_summary(tweet_text)
+                    
+                    return extracted
+                    
+                except asyncio.TimeoutError:
+                    logger.warning(f"Timeout on attempt {attempt + 1}")
+                    continue
+                except Exception as e:
+                    if "Circuit breaker open" in str(e):
+                        logger.warning("Circuit breaker open - skipping")
+                        return self._create_fallback_summary(tweet_text)
+                    else:
+                        self.circuit_breaker.record_failure()
+                        logger.error(f"Error on attempt {attempt + 1}: {str(e)}")
+                        continue
+            
+            return self._create_fallback_summary(tweet_text)
             
         except Exception as e:
             logger.error(f"Error extracting text: {str(e)}")
-            return tweet_text[:100]  # Fallback to truncated original
+            return self._create_fallback_summary(tweet_text)
+
+    def _create_fallback_summary(self, text):
+        """Create a fallback summary when extraction fails"""
+        try:
+            # Split into sentences
+            sentences = re.split(r'[.!?]+', text)
+            
+            for sentence in sentences:
+                sentence = sentence.strip()
+                # Find sentence with numbers, symbols, or meaningful content
+                if (re.search(r'\$[\d.]+ *[KMBkmb]?|\$[A-Za-z]+|\d+(?:\.\d+)?%?', sentence) or
+                    len(sentence.split()) >= 5) and len(sentence) <= 200:
+                    return sentence
+                    
+            # If no good sentence found, return first substantial sentence
+            for sentence in sentences:
+                sentence = sentence.strip()
+                if len(sentence) >= 20 and not sentence.startswith(('RT', '@', '#')):
+                    return sentence
+                    
+            # Last resort: clean first sentence
+            first_sentence = sentences[0].strip()
+            return re.sub(r'^\W+|\W+$', '', first_sentence)
+        except Exception as e:
+            logger.error(f"Error creating fallback summary: {str(e)}")
+            return text[:200]  # Fallback to truncated text
+
+    def _extract_metrics(self, text):
+        """Extract numerical metrics from text"""
+        try:
+            # Pattern for currency amounts with optional decimals
+            currency_pattern = r'\$([0-9,]+(?:\.[0-9]+)?)'
+            
+            # Find all currency amounts
+            amounts = re.findall(currency_pattern, text)
+            
+            # Convert to float, removing commas
+            return [float(amount.replace(',', '')) for amount in amounts]
+        except Exception as e:
+            logger.error(f"Error extracting metrics: {str(e)}")
+            return []
+
+    def _is_metric_update(self, items):
+        """Check if tweets are metric updates of the same type"""
+        try:
+            # Need at least 2 items to compare
+            if len(items) < 2:
+                return False, []
+                
+            # Check if all tweets are from the same author
+            authors = {item['author'] for item in items}
+            if len(authors) > 1:
+                return False, []
+                
+            # Get metrics from each tweet
+            tweet_metrics = []
+            for item in items:
+                metrics = self._extract_metrics(item['text'])
+                if metrics:
+                    tweet_metrics.append({
+                        'text': item['text'],
+                        'metrics': metrics,
+                        'date': item.get('created_at', ''),
+                        'index': items.index(item)
+                    })
+            
+            # Check if we have consistent number of metrics across tweets
+            if not tweet_metrics or not all(len(m['metrics']) == len(tweet_metrics[0]['metrics']) for m in tweet_metrics):
+                return False, []
+                
+            # Sort by date, most recent first
+            tweet_metrics.sort(key=lambda x: x['date'], reverse=True)
+            
+            # Check if metrics are consistently increasing/decreasing
+            first_metrics = tweet_metrics[0]['metrics']
+            is_update = True
+            
+            for i in range(1, len(tweet_metrics)):
+                current_metrics = tweet_metrics[i]['metrics']
+                # Check if all metrics show consistent change
+                if not all(first_metrics[j] >= current_metrics[j] for j in range(len(first_metrics))):
+                    is_update = False
+                    break
+            
+            if is_update:
+                # Return True and the index of the most recent tweet
+                return True, [tweet_metrics[0]['index']]
+                
+            return False, []
+            
+        except Exception as e:
+            logger.error(f"Error checking metric updates: {str(e)}")
+            return False, []
 
     async def _check_duplicate_content(self, items):
         """Check for duplicate content among tweets and select the best version"""
@@ -241,7 +391,14 @@ class ContentFilter:
                 return items
 
             prompt = """Analyze these tweets and determine if they contain the same news/information.
-If they are duplicates, select the most informative one based on:
+For tweets reporting metrics or numbers (like prices, supply, TVL etc):
+1. If they show the same type of metric increasing/decreasing over time, keep only the most recent update
+2. Example of metric updates (keep only the first one):
+   - "Printed $142,760,509 USDC; Supply: $52,073,308,257"
+   - "Printed $136,330,961 USDC; Supply: $51,930,547,748"
+   - "Printed $124,732,078 USDC; Supply: $51,794,216,787"
+
+For other duplicate content, select the most informative version based on:
 1. Specificity (more specific details are better)
 2. Completeness (more context is better)
 3. Clarity (clearer explanation is better)
@@ -254,7 +411,7 @@ Return ONLY a JSON object in this exact format:
 {{
     "are_duplicates": boolean,
     "keep_item_ids": [integer array of indices to keep],
-    "reason": "string explaining the decision",
+    "reason": "string explaining the decision (mention if metric update)",
     "confidence": float between 0 and 1
 }}""".format(json.dumps([{
                 'id': idx,
