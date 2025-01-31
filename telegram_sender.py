@@ -2,6 +2,7 @@
 
 import logging
 import html
+import telegram
 from telegram import Bot
 from telegram.constants import ParseMode
 import asyncio
@@ -13,7 +14,8 @@ from dotenv import load_dotenv
 import re
 import sys
 from error_handler import RetryConfig, with_retry, TelegramError, log_error, DataProcessingError
-from category_mapping import TELEGRAM_CHANNEL_MAP
+from category_mapping import TELEGRAM_CHANNEL_MAP, EMOJI_MAP
+import time
 
 # Setup logging
 logging.basicConfig(
@@ -140,6 +142,148 @@ class TelegramSender:
             log_error(logger, e, f"Failed to send message to channel {channel_id}")
             raise TelegramError(f"Failed to send message: {str(e)}")
 
+    async def process_category(self, category: str, content: dict):
+        """Process and send a category summary to Telegram"""
+        try:
+            channel_id = TELEGRAM_CHANNEL_MAP[category]
+            if not await self._validate_channel(channel_id):
+                logger.error(f"Skipping invalid channel: {channel_id}")
+                return False
+            
+            formatted_text = await self.format_text(content['text'])
+            if not formatted_text:
+                logger.error(f"Empty content for {category}")
+                return False
+            
+            return await self.send_message(channel_id, formatted_text)
+        
+        except KeyError as e:
+            logger.error(f"Category {category} not found in channel map")
+            return False
+        except Exception as e:
+            log_error(logger, e, f"Error processing {category}")
+            return False
+
+    async def _validate_channel(self, channel_id: str) -> bool:
+        try:
+            chat = await self.bot.get_chat(chat_id=channel_id)
+            return chat.type in ["channel", "supergroup"]
+        except telegram.error.BadRequest:
+            logger.error(f"Invalid channel ID: {channel_id}")
+            return False
+
+    async def format_category_summary(self, category: str, summary: dict) -> str:
+        """Format category summary into a Telegram message"""
+        try:
+            # Case-insensitive check for category
+            category_key = next(
+                (k for k in summary.keys() if k.upper() == category),
+                None
+            )
+            
+            if not summary or not category_key:
+                logger.error(f"Invalid summary format for {category}")
+                return ""
+            
+            category_data = summary[category_key]
+            if not isinstance(category_data, dict):
+                logger.error(f"Invalid category data format for {category}")
+                return ""
+            
+            # Build message with header
+            lines = [f"<u><b><i>{category} Rollup</i></b></u> ~\n"]
+            
+            # Add each subcategory and its tweets
+            for subcategory, tweets in category_data.items():
+                # Get emoji for subcategory if it exists
+                emoji = EMOJI_MAP.get(subcategory, '')
+                
+                # Add subcategory header with emoji
+                subcategory_text = f"<u><b>{subcategory}</b></u>"
+                if emoji:
+                    subcategory_text += f" {emoji}"
+                lines.append(subcategory_text)
+                
+                # Group tweets by author
+                author_tweets = {}
+                for tweet in tweets:
+                    author = tweet.get('author', '')
+                    text = tweet.get('text', '')
+                    url = tweet.get('url', '')
+                    
+                    if author and text and url:
+                        if author not in author_tweets:
+                            author_tweets[author] = []
+                        author_tweets[author].append((text, url))
+                
+                # Format consolidated tweets for each author
+                for author, tweet_list in author_tweets.items():
+                    if len(tweet_list) == 1:
+                        # Single tweet format
+                        text, url = tweet_list[0]
+                        lines.append(f"- <b>{author}</b>: <a href='{url}'>{html.escape(text)}</a>")
+                    else:
+                        # Multiple tweets consolidated format
+                        consolidated = []
+                        for text, url in tweet_list:
+                            # Create short summary (first part of text up to a sensible break)
+                            summary = text.split('.')[0].split(';')[0].strip()
+                            if len(summary) > 50:  # Truncate if too long
+                                summary = summary[:47] + "..."
+                            consolidated.append(f"<a href='{url}'>{html.escape(summary)}</a>")
+                        
+                        lines.append(f"- <b>{author}</b>: {' • '.join(consolidated)}")
+                
+                lines.append("")  # Empty line between subcategories
+            
+            return "\n".join(lines)
+            
+        except Exception as e:
+            log_error(logger, e, f"Failed to format {category} summary")
+            return ""
+
+    async def process_news_summary(self, summary_file: Path):
+        """Process a news summary file and send to test channel"""
+        try:
+            # Load and validate summary
+            data = await load_json_file(summary_file)
+            if not data:
+                logger.error(f"Empty summary file: {summary_file}")
+                return False
+            
+            # Get category from filename (e.g., "sei_summary.json" -> "SEI")
+            category = summary_file.stem.split('_')[0].upper()
+            if not category:
+                logger.error(f"Could not determine category from filename: {summary_file}")
+                return False
+            
+            # Use test channel ID
+            channel_id = os.getenv('TELEGRAM_TEST_CHANNEL_ID')
+            if not channel_id:
+                logger.error("Test channel ID not found in environment variables")
+                return False
+            
+            # Format summary
+            formatted_text = await self.format_category_summary(category, data)
+            if not formatted_text:
+                logger.error(f"Failed to format summary for {category}")
+                return False
+            
+            # Format and send message
+            html_text = await self.format_text(formatted_text)
+            success = await self.send_message(channel_id, html_text)
+            
+            if success:
+                logger.info(f"✅ Successfully sent {category} summary to test channel")
+            else:
+                logger.error(f"❌ Failed to send {category} summary to test channel")
+            
+            return success
+            
+        except Exception as e:
+            log_error(logger, e, f"Failed to process summary file: {summary_file}")
+            return False
+
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
 async def load_json_file(file_path):
     """Load and parse JSON file with retry"""
@@ -174,83 +318,41 @@ async def process_category(sender, category, content, channel_id):
         log_error(logger, e, f"Failed to process category: {category}")
         raise DataProcessingError(f"Failed to process category: {str(e)}")
 
-async def test_sender():
-    """Test the TelegramSender"""
+if __name__ == "__main__":
     load_dotenv()
     
     try:
-        # Get date from command line argument or use today's date
-        date_str = sys.argv[1] if len(sys.argv) > 1 else datetime.now().strftime('%Y%m%d')
-        logger.info(f"Processing summaries for date: {date_str}")
-        
-        # Validate environment variables
+        # Initialize sender with bot token
         bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
         if not bot_token:
-            raise ValueError("TELEGRAM_BOT_TOKEN not found in environment variables")
+            raise ValueError("TELEGRAM_BOT_TOKEN not found in environment")
             
-        # Use centralized channel mapping
-        channel_mapping = {
-            category: os.getenv(f'TELEGRAM_{channel_key.upper()}_CHANNEL_ID')
-            for category, channel_key in TELEGRAM_CHANNEL_MAP.items()
-        }
+        sender = TelegramSender(bot_token)
         
-        # Debug logging for channel mapping
-        for category, channel_id in channel_mapping.items():
-            logger.info(f"Channel mapping - Category: {category}, Channel ID: {channel_id}")
+        # Process all summary files
+        summary_dir = Path('data/filtered/news_filtered')
+        summary_files = list(summary_dir.glob('*_summary.json'))
+        
+        if not summary_files:
+            logger.warning("No summary files found to process")
+            sys.exit(0)
             
-        # Load summaries
-        summaries_file = Path('data') / 'summaries' / f'summaries_{date_str}.json'
-        if not summaries_file.exists():
-            logger.error(f"No summaries file found for date {date_str}")
-            return
-            
-        try:
-            data = await load_json_file(summaries_file)
-                
-            if not data or 'summaries' not in data:
-                logger.error("No summaries found in data")
-                return
-                
-            summaries = data['summaries']
-            logger.info(f"Found summaries for: {', '.join(summaries.keys())}")
-            
-            sender = TelegramSender(bot_token)
-            valid_categories = set(channel_mapping.keys())
-            
-            for category, content in summaries.items():
-                if category not in valid_categories:
-                    logger.warning(f"Category {category} not in valid_categories: {valid_categories}")
-                    continue
-                    
+        logger.info(f"Found {len(summary_files)} summary files to process")
+        
+        async def process_all_files():
+            for summary_file in summary_files:
                 try:
-                    channel_id = channel_mapping.get(category)
-                    logger.info(f"Processing {category} with channel ID: {channel_id}")
-                    if not channel_id:
-                        logger.error(f"No channel ID found for {category} in mapping: {channel_mapping}")
-                        continue
-                        
-                    logger.info(f"Sending {category} summary...")
-                    
-                    success = await process_category(sender, category, content, channel_id)
-                    
-                    if success:
-                        logger.info(f"Successfully sent {category} summary")
-                    else:
-                        logger.error(f"Failed to send {category} summary")
-                        
+                    logger.info(f"Processing {summary_file.name}")
+                    await sender.process_news_summary(summary_file)
+                    # Brief pause between messages
                     await asyncio.sleep(2)
-                    
                 except Exception as e:
-                    log_error(logger, e, f"Error processing {category}")
+                    logger.error(f"Failed to process {summary_file.name}: {str(e)}")
                     continue
-                    
-        except json.JSONDecodeError as e:
-            log_error(logger, e, "Failed to parse summaries file")
-            raise DataProcessingError(f"Failed to parse summaries file: {str(e)}")
-            
+        
+        # Run everything in a single event loop
+        asyncio.run(process_all_files())
+                
     except Exception as e:
-        log_error(logger, e, "Error in sender")
-        raise
-
-if __name__ == "__main__":
-    asyncio.run(test_sender()) 
+        logger.error(f"Script error: {str(e)}")
+        sys.exit(1) 
