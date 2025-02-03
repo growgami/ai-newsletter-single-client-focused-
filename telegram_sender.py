@@ -172,6 +172,25 @@ class TelegramSender:
             logger.error(f"Invalid channel ID: {channel_id}")
             return False
 
+    def _get_emoji_for_subcategory(self, subcategory: str) -> str:
+        """Get emoji for subcategory by matching individual words"""
+        try:
+            # Split subcategory into words and clean them
+            words = set(word.strip() for word in subcategory.split())
+            
+            # Find all matching emojis
+            emojis = []
+            for word in words:
+                if emoji := EMOJI_MAP.get(word):
+                    emojis.append(emoji)
+            
+            # Return first matching emoji or empty string
+            return emojis[0] if emojis else ''
+            
+        except Exception as e:
+            logger.error(f"Error getting emoji for {subcategory}: {str(e)}")
+            return ''
+
     async def format_category_summary(self, category: str, summary: dict) -> str:
         """Format category summary into a Telegram message"""
         try:
@@ -195,8 +214,8 @@ class TelegramSender:
             
             # Add each subcategory and its tweets
             for subcategory, tweets in category_data.items():
-                # Get emoji for subcategory if it exists
-                emoji = EMOJI_MAP.get(subcategory, '')
+                # Get emoji for subcategory by matching words
+                emoji = self._get_emoji_for_subcategory(subcategory)
                 
                 # Add subcategory header with emoji
                 subcategory_text = f"<u><b>{subcategory}</b></u>"
