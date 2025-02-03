@@ -89,37 +89,57 @@ CATEGORY_FOCUS: Dict[str, List[str]] = {
 
 # Emoji mappings for subcategories
 EMOJI_MAP: Dict[str, str] = {
-    # Technical & Development
-    'Protocol Development': '⚡',
-    'Technical Infrastructure': '🔧',
-    'Infrastructure Development': '🔧',
-    'Network Security': '🔒',
-    'Developer Tools': '🛠️',
+    # Market & Trading
+    'Market': '📊',
+    'Trading': '💱',
+    'Price': '📈',
+    'Investment': '💸',
+    'Volume': '📊',
+    'Analysis': '📊',
+    'Performance': '📈',
     
-    # Integration & Partnerships
-    'Cross-chain Integration': '🌉',
-    'Industry Partnerships': '🤝',
-    'Ecosystem Partnerships': '🤝',
-    'IoT Integration': '📱',
+    # Technical
+    'Technical': '⚙️',
+    'Protocol': '⚡',
+    'Infrastructure': '🔧',
+    'Security': '🔒',
+    'Development': '⚡',
+    'Tools': '🛠️',
+    'Updates': '🔄',
     
-    # Governance & Community
+    # Integration
+    'Integration': '🌉',
+    'Partnerships': '🤝',
+    'Partnership': '🤝',
+    'Ecosystem': '🌱',
+    
+    # Community
+    'Community': '👥',
     'Governance': '⚖️',
     'Treasury': '💰',
-    'DAO Activities': '🏛️',
+    'DAO': '🏛️',
     
-    # Growth & Adoption
-    'Ecosystem Growth': '📈',
+    # Growth
+    'Growth': '📈',
     'Adoption': '🚀',
     'TVL': '💹',
+    'Launch': '🚀',
+    'Launches': '🚀',
     
     # AI & Innovation
-    'AI Integration': '🤖',
-    'AI Development': '🧠',
-    'AI Safety': '🛡️',
-    'Multi-agent Systems': '🎯',
+    'AI': '🤖',
+    'Innovation': '💡',
+    'Safety': '🛡️',
+    
+    # Marketing & Awareness
+    'Marketing': '📢',
+    'Awareness': '🌟',
+    'Engagement': '🤝',
+    'Token': '🪙',
+    'Project': '📌',
     
     # Default
-    'Other Updates': '📌'
+    'Other': '📌'
 }
 
 CATEGORY_KEYWORDS: Dict[str, List[str]] = {
