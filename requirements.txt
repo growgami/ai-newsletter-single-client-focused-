@@ -1,15 +1,21 @@
-python-telegram-bot==21.1
-python-dotenv==1.0.0
-aiohttp==3.9.3
-playwright==1.42.0
-pydantic==2.7.1
-pydantic-core==2.18.2
-psutil==5.9.8
-APScheduler==3.10.4
-openai==1.14.0
-deepseek-sdk==1.3.0
-beautifulsoup4==4.12.3
-html5lib==1.1
-python-dateutil==2.9.0.post0
-loguru==0.7.2
-aiofiles==23.2.1
+# Browser automation
+playwright
+
+# API clients
+openai
+aiohttp
+apify-client
+
+# Environment and configuration
+python-dotenv
+backports.zoneinfo;python_version<"3.9"
+
+# System monitoring
+psutil
+
+# Task scheduling
+APScheduler
+
+# Messaging platforms
+python-telegram-bot[job-queue]
+slack-bolt
