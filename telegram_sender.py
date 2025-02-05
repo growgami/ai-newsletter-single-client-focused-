@@ -272,7 +272,7 @@ class TelegramSender:
                     if len(tweet_list) == 1:
                         # Single tweet format
                         text, url = tweet_list[0]
-                        lines.append(f"- <b>{author}</b>: <a href='{url}'>{html.escape(text)}</a>")
+                        lines.append(f"- <b>{author}</b> <a href='{url}'>{html.escape(text)}</a>")
                     else:
                         # Multiple tweets consolidated format
                         consolidated = []
