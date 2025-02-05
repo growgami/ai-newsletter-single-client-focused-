@@ -32,7 +32,12 @@ class TelegramSender:
         if not bot_token:
             raise ValueError("Bot token is required")
         self.bot = Bot(token=bot_token)
+        self.used_emojis = set()  # Track used emojis per summary
         
+    def _reset_used_emojis(self):
+        """Reset the used emojis tracking set"""
+        self.used_emojis.clear()
+
     async def format_text(self, text):
         """Format text with HTML tags according to instructions"""
         if not text:
@@ -138,8 +143,18 @@ class TelegramSender:
             )
             return True
             
+        except telegram.error.TimedOut:
+            logger.warning(f"Timeout sending message to channel {channel_id[:8]}... (Retrying)")
+            raise TelegramError("Connection timed out")
+        except telegram.error.RetryAfter as e:
+            logger.warning(f"Rate limit hit, retry after {e.retry_after}s")
+            await asyncio.sleep(e.retry_after)
+            raise TelegramError(f"Rate limited, retry after {e.retry_after}s")
+        except telegram.error.TelegramError as e:
+            logger.error(f"Telegram API error: {str(e)}")
+            raise TelegramError(f"Telegram API error: {str(e)}")
         except Exception as e:
-            log_error(logger, e, f"Failed to send message to channel {channel_id}")
+            logger.error(f"Unexpected error sending message: {str(e)}")
             raise TelegramError(f"Failed to send message: {str(e)}")
 
     async def process_category(self, category: str, content: dict):
@@ -173,27 +188,44 @@ class TelegramSender:
             return False
 
     def _get_emoji_for_subcategory(self, subcategory: str) -> str:
-        """Get emoji for subcategory by matching individual words"""
+        """Get unique emoji for subcategory by matching individual words"""
         try:
             # Split subcategory into words and clean them
             words = set(word.strip() for word in subcategory.split())
             
-            # Find all matching emojis
-            emojis = []
+            # Find all matching emojis that haven't been used yet
+            available_emojis = []
             for word in words:
                 if emoji := EMOJI_MAP.get(word):
-                    emojis.append(emoji)
+                    if emoji not in self.used_emojis:
+                        available_emojis.append(emoji)
             
-            # Return first matching emoji or empty string
-            return emojis[0] if emojis else ''
+            # If we found an unused emoji, use it
+            if available_emojis:
+                chosen_emoji = available_emojis[0]
+                self.used_emojis.add(chosen_emoji)
+                return chosen_emoji
+            
+            # If all matching emojis are used, find first unused emoji from default set
+            default_emojis = ['📌', '📍', '🔖', '🏷️', '💠', '🔸', '🔹', '🔰']
+            for emoji in default_emojis:
+                if emoji not in self.used_emojis:
+                    self.used_emojis.add(emoji)
+                    return emoji
+                    
+            # If somehow all emojis are used, return the last default emoji
+            return default_emojis[-1]
             
         except Exception as e:
             logger.error(f"Error getting emoji for {subcategory}: {str(e)}")
-            return ''
+            return '📌'
 
     async def format_category_summary(self, category: str, summary: dict) -> str:
         """Format category summary into a Telegram message"""
         try:
+            # Reset used emojis for new summary
+            self._reset_used_emojis()
+            
             # Case-insensitive check for category
             category_key = next(
                 (k for k in summary.keys() if k.upper() == category),
@@ -214,7 +246,7 @@ class TelegramSender:
             
             # Add each subcategory and its tweets
             for subcategory, tweets in category_data.items():
-                # Get emoji for subcategory by matching words
+                # Get unique emoji for subcategory
                 emoji = self._get_emoji_for_subcategory(subcategory)
                 
                 # Add subcategory header with emoji
@@ -293,14 +325,15 @@ class TelegramSender:
             success = await self.send_message(channel_id, html_text)
             
             if success:
-                logger.info(f"✅ Successfully sent {category} summary to test channel")
-            else:
-                logger.error(f"❌ Failed to send {category} summary to test channel")
+                logger.info(f"✅ Successfully sent {category} summary")
             
             return success
             
+        except TelegramError as e:
+            logger.error(f"Failed to send {summary_file.stem}: {str(e)}")
+            return False
         except Exception as e:
-            log_error(logger, e, f"Failed to process summary file: {summary_file}")
+            logger.error(f"Error processing {summary_file.stem}: {str(e)}")
             return False
 
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
