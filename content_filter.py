@@ -146,6 +146,7 @@ class ContentFilter:
                     model="deepseek-chat",
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.3,
+                    response_format={"type": "json_object"},
                     max_tokens=500
                 ),
                 timeout=3  # 3 second timeout
@@ -173,6 +174,7 @@ class ContentFilter:
                     model="gpt-4o-mini",
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.3,
+                    response_format={"type": "json_object"},
                     max_tokens=500
                 ),
                 timeout=10  # 10 second timeout
@@ -187,7 +189,7 @@ class ContentFilter:
             logger.warning(f"OpenAI request failed: {str(e)}")
             return None
 
-    async def _extract_summary(self, tweet_text, reposted_text='', quoted_text='', category=''):
+    async def _extract_summary(self, tweet_text, reposted_text='', quoted_text='', author=''):
         """Extract an accurate and informative summary from all content sources"""
         try:
             await self.circuit_breaker.check()
@@ -200,32 +202,109 @@ class ContentFilter:
             Quoted content: {quoted_text}
             Reposted content: {reposted_text}
 
-            2. SUMMARY REQUIREMENTS:
-            - Use 6-12 words only
-            - Include most critical information related to the tweets {category}
-            - Keep exact numbers and symbols
-            - Preserve token names ($BTC, $ETH)
-            - Focus on key metrics/events
-            - Remove unnecessary words
+            2. ATTRIBUTION AND CONTENT FLOW:
+            - Attribution and Content must form ONE natural sentence
+            - Choose the most appropriate subject as Attribution:
+              * Use project/platform name when:
+                - Official announcements from their verified account (@SeiNetwork, @Binance)
+                - Project metrics/stats from reliable sources
+                - Project launches or updates from team members
+                - Example: "Sei Surpasses $23B in Volume" (from @SeiNetwork)
+              * Use organization name when:
+                - Official announcements from their verified account
+                - Organization metrics/stats from reliable sources
+                - Example: "Binance Lists New Trading Pairs" (from @binance)
+              * Use research firm name when:
+                - Publishing official research/analysis from their account
+                - Example: "Delphi Digital Analyzes Layer-2 Growth" (from @Delphi_Digital)
+              * For personal content, use the ACTUAL TWEET AUTHOR:
+                - For price predictions/analysis
+                - For trading strategies
+                - For personal opinions
+                - The author of this tweet is: {author}
+                - Example input: "Just analyzed $SEI price action"
+                  Output: "{author}: $SEI Shows Strong Support at $0.33"
+              * IMPORTANT: Token Symbol Rules
+                - NEVER use token symbols ($BTC, $SEI, etc.) as attribution
+                - When tweet is about a token, use the actual tweet author with colon
+                  BAD: "$SEI Reaches Support at $0.33"
+                  GOOD: "{author}: $SEI Support Level at $0.33"
+              * For metrics and stats:
+                - Use project name if metric directly relates to project AND from official account
+                  GOOD: "Sei Reports 4.1M Weekly Active Users" (from @SeiNetwork)
+                - Use actual tweet author if personal analysis/interpretation
+                  GOOD: "{author}: $SEI Shows Increasing Volume"
+            - Attribution should be the natural subject of the sentence
+            - Content should be the predicate that completes the sentence
 
-            3. WRITING STYLE:
-            - Use confident, direct statements
-            - Remove uncertain language (might, could, maybe)
-            - Present market events as facts
-            - Keep technical terms unchanged
-            - Maintain professional tone
+            3. ATTRIBUTION FORMATTING:
+            - For project/platform names:
+              * Use clean name without @ symbol
+              * Example: "Sei", "Jupiter", "Berachain"
+            - For organizations:
+              * Use official name without @ symbol
+              * Example: "Binance", "Coinbase"
+            - For research firms:
+              * Use official name
+              * Example: "Delphi Digital", "Messari"
+            - For authors (from tweet):
+              * Use the exact author name provided above: {author}
+              * Add colon when discussing token price/analysis
+              * Example: "{author}: Analysis Shows Support Level"
+            - Keep attribution concise and relevant
+            - No verbs or connecting words in attribution (except colon where specified)
 
-            4. EXAMPLES:
-            Input: "Looks like $TOSHI might get listed on Coinbase soon! Hearing rumors of ~$750m daily volume"
-            Output: "$TOSHI reaches $750M Coinbase daily volume"
+            IMPORTANT RULES:
+            1. The author of this tweet is: {author}
+            2. For personal analysis/predictions, use this exact author name
+            3. Only use project names for official announcements from verified accounts
+            4. When in doubt, use {author} with a colon
 
-            Input: "probably gonna see Hyperliquid hit new ATH this month, volume almost at $157b (was $156b in Dec)"
-            Output: "Hyperliquid hits $157B monthly volume record"
+            4. CONTENT FORMATTING:
+            - Content must start with a verb that connects naturally to attribution
+            - CRITICAL: Preserve ALL numerical data and symbols:
+              * Token symbols: Always keep $BTC, $ETH, $ANIME, etc.
+              * Exact numbers: Keep all prices, percentages, volumes
+              * Time references: Keep dates, durations, deadlines
+              * Rankings: Keep position numbers (#1, #30, etc.)
+              * Metrics: TVL, APR, APY, volume, market cap
+            - If source has multiple numbers, prioritize the most significant ones
+            - Use active voice and present tense
+            - Focus on key metrics, updates, or findings
+            - 8-15 words total (attribution + content combined)
+            - Start content with connecting verbs like:
+              * Action verbs: "Surpasses", "Reports", "Launches", "Reveals"
+              * Analysis verbs: "Analyzes", "Predicts", "Shows", "Demonstrates"
+              * Update verbs: "Achieves", "Reaches", "Hits", "Gains"
 
-            Input: "Jupiter protocol news! $JUP has been ranging between $1.30 - $0.70 for 9 months. 50% of protocol fees now going to JUP buybacks, 30% total supply burned"
-            Output: "Jupiter allocates 50% fees for buybacks"
+            5. EXAMPLES (showing natural flow):
+            Input: "@peblo100xfinder: Sei network just hit $23B in perp volume! $SEI momentum building up"
+            Output: "Sei Surpasses $23 Billion in Perpetual Volume as $SEI Momentum Builds"
 
-            Return ONLY the summary text, no explanations.
+            Input: "@research_firm: New report analyzing Binance token performance and drawdown"
+            Output: "Presto Research Analyzes Maximum Drawdown Patterns in Binance Listings"
+
+            Input: "@random_user: Coinbase users lost over $300M to scams this year according to @zachxbt investigation"
+            Output: "ZachXBT Reveals Coinbase Users Lost Over $300M to Social Engineering"
+
+            Input: "@wlf_intern: World Liberty Fi team announced new token acquisition strategy"
+            Output: "World Liberty Fi Announces New Initiative to Acquire Project Tokens"
+
+            Input: "@berachain_dev: The Honeypaper documentation is now available!"
+            Output: "Berachain Launches Comprehensive Protocol Documentation 'The Honeypaper'"
+
+            IMPORTANT: Your summary MUST:
+            1. Use the most authoritative name as Attribution (not Twitter handles)
+            2. Form a natural flowing sentence when combined
+            3. Preserve ALL numerical values and token symbols
+            4. Start Content with a verb that connects naturally to the Attribution
+            5. Keep the total length between 8-15 words
+
+            Return the summary in this exact format (JSON):
+            {{
+                "attribution": "the chosen attribution",
+                "content": "the content starting with a verb"
+            }}
             """
             
             # Retry configuration
@@ -252,27 +331,39 @@ class ContentFilter:
                             continue
                         else:
                             logger.warning(f"All attempts failed after {max_retries} retries")
-                            return self._create_fallback_summary(tweet_text)
+                            return None
                     
-                    # Clean up response
-                    extracted = response.strip().strip('"').strip()
-                    
-                    # Verify word count (5-8 words)
-                    word_count = len(extracted.split())
-                    if not (6 <= word_count <= 12):
-                        logger.warning(f"❌ Summary removed: Word count {word_count} outside 5-8 range")
-                        return self._create_fallback_summary(tweet_text)
-                    
-                    # Verify all numbers and symbols are preserved
-                    source_text = ' '.join([t for t in [tweet_text, reposted_text, quoted_text] if t])
-                    numbers_symbols = re.findall(r'\$[\d.]+ *[KMBkmb]?|\$[A-Za-z]+|\d+(?:\.\d+)?%?', source_text)
-                    
-                    if numbers_symbols and not any(num in extracted for num in numbers_symbols):
-                        logger.warning(f"❌ Summary removed: Missing important numbers/symbols: {', '.join(numbers_symbols)}")
-                        return self._create_fallback_summary(tweet_text)
-                    
-                    logger.info(f"✅ Summary created: {extracted}")
-                    return extracted
+                    # Parse the JSON response
+                    try:
+                        result = json.loads(response.strip())
+                        attribution = result.get('attribution', '').strip()
+                        content = result.get('content', '').strip()
+                        
+                        if not attribution or not content:
+                            logger.warning("Missing attribution or content in response")
+                            return None
+                            
+                        # Verify word count (8-15 words)
+                        full_text = f"{attribution} {content}"
+                        word_count = len(full_text.split())
+                        if not (8 <= word_count <= 15):
+                            logger.warning(f"❌ Summary removed: Word count {word_count} outside 8-15 range")
+                            return None
+                        
+                        # Verify all numbers and symbols are preserved
+                        source_text = ' '.join([t for t in [tweet_text, reposted_text, quoted_text] if t])
+                        numbers_symbols = re.findall(r'\$[\d.]+ *[KMBkmb]?|\$[A-Za-z]+|\d+(?:\.\d+)?%?', source_text)
+                        
+                        if numbers_symbols and not any(num in full_text for num in numbers_symbols):
+                            logger.warning(f"❌ Summary removed: Missing important numbers/symbols: {', '.join(numbers_symbols)}")
+                            return None
+                        
+                        logger.info(f"✅ Summary created: {full_text}")
+                        return {'attribution': attribution, 'content': content}
+                        
+                    except json.JSONDecodeError:
+                        logger.warning(f"Failed to parse JSON response: {response}")
+                        continue
                     
                 except asyncio.TimeoutError:
                     logger.warning(f"Timeout on attempt {attempt + 1}")
@@ -280,17 +371,17 @@ class ContentFilter:
                 except Exception as e:
                     if "Circuit breaker open" in str(e):
                         logger.warning("Circuit breaker open - skipping")
-                        return self._create_fallback_summary(tweet_text)
+                        return None
                     else:
                         self.circuit_breaker.record_failure()
                         logger.error(f"Error on attempt {attempt + 1}: {str(e)}")
                         continue
             
-            return self._create_fallback_summary(tweet_text)
+            return None
             
         except Exception as e:
             logger.error(f"Error in summary extraction: {str(e)}")
-            return self._create_fallback_summary(tweet_text)
+            return None
 
     def _create_fallback_summary(self, text):
         """Create a fallback summary when extraction fails"""
@@ -340,9 +431,9 @@ class ContentFilter:
             if len(items) < 2:
                 return False, []
                 
-            # Check if all tweets are from the same attribution
-            attributions = {item['attribution'] for item in items}
-            if len(attributions) > 1:
+            # Check if all tweets are about the same subject by comparing first word of content
+            subjects = {item['content'].split()[0] for item in items}
+            if len(subjects) > 1:
                 return False, []
                 
             # Get metrics from each tweet
@@ -353,7 +444,7 @@ class ContentFilter:
                     tweet_metrics.append({
                         'content': item['content'],
                         'metrics': metrics,
-                        'date': item.get('created_at', ''),
+                        'date': item.get('original_date', ''),
                         'index': items.index(item)
                     })
             
@@ -514,10 +605,11 @@ Return ONLY a JSON object in this exact format:
                         tweet_text = item.get('tweet', '')
                         reposted_text = item.get('reposted_content', '')
                         quoted_text = item.get('quoted_content', '')
+                        author = item.get('author', '')  # Get the author
                         
-                        extracted_text = await self._extract_summary(tweet_text, reposted_text, quoted_text)
+                        result = await self._extract_summary(tweet_text, reposted_text, quoted_text, author)
                         
-                        if extracted_text:
+                        if result and isinstance(result, dict):
                             # Format the processed_date into YYYY-MM-DD format
                             processed_date = item.get('processed_date', '')
                             if processed_date:
@@ -531,8 +623,8 @@ Return ONLY a JSON object in this exact format:
                                 formatted_date = ''
                             
                             filtered_item = {
-                                'attribution': item.get('author', ''),
-                                'content': extracted_text,
+                                'attribution': result['attribution'],
+                                'content': result['content'],
                                 'url': item.get('url', ''),
                                 'original_date': formatted_date
                             }
