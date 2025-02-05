@@ -42,9 +42,9 @@ class ContentFilter:
         # Calculate average content length including all text fields
         total_length = 0
         for item in items:
-            text = item.get('text', '')
-            quoted = item.get('quotedContent', {}).get('text', '') if item.get('quotedContent') else ''
-            reposted = item.get('repostedContent', {}).get('text', '') if item.get('repostedContent') else ''
+            text = item.get('tweet', '')
+            quoted = item.get('quoted_content', '')
+            reposted = item.get('reposted_content', '')
             total_length += len(text) + len(quoted) + len(reposted)
             
         avg_length = total_length / len(items)
@@ -340,18 +340,18 @@ class ContentFilter:
             if len(items) < 2:
                 return False, []
                 
-            # Check if all tweets are from the same author
-            authors = {item['author'] for item in items}
-            if len(authors) > 1:
+            # Check if all tweets are from the same attribution
+            attributions = {item['attribution'] for item in items}
+            if len(attributions) > 1:
                 return False, []
                 
             # Get metrics from each tweet
             tweet_metrics = []
             for item in items:
-                metrics = self._extract_metrics(item['text'])
+                metrics = self._extract_metrics(item['content'])
                 if metrics:
                     tweet_metrics.append({
-                        'text': item['text'],
+                        'content': item['content'],
                         'metrics': metrics,
                         'date': item.get('created_at', ''),
                         'index': items.index(item)
@@ -403,9 +403,9 @@ class ContentFilter:
                 logger.info("\n🔄 Metric Update Analysis:")
                 logger.info("Found sequence of related metric updates:")
                 for idx, item in enumerate(items):
-                    metrics = self._extract_metrics(item['text'])
+                    metrics = self._extract_metrics(item['content'])
                     status = "✅ KEPT (most recent)" if idx in keep_indices else "❌ REMOVED (older)"
-                    logger.info(f"{status} - {item['text'][:100]}...")
+                    logger.info(f"{status} - {item['content'][:100]}...")
                     if metrics:
                         logger.info(f"   └─ Metrics: {', '.join(['$' + str(m) for m in metrics])}")
                     if 'original_date' in item:
@@ -449,7 +449,7 @@ Return ONLY a JSON object in this exact format:
     ]
 }}""".format(json.dumps([{
                 'id': idx,
-                'text': item['text'],
+                'content': item['content'],
                 'date': item.get('original_date', ''),
                 'url': item['url']
             } for idx, item in enumerate(items)], indent=2))
@@ -478,13 +478,13 @@ Return ONLY a JSON object in this exact format:
                                     if tweet_id < len(items):
                                         status_emoji = "✅" if comparison.get('status') == "kept" else "❌"
                                         logger.info(f"\n{status_emoji} Tweet {tweet_id + 1}:")
-                                        logger.info(f"   Content: {items[tweet_id]['text'][:100]}...")
+                                        logger.info(f"   Content: {items[tweet_id]['content'][:100]}...")
                                         logger.info(f"   Status: {comparison.get('status', 'unknown').upper()}")
                                         logger.info(f"   Reason: {comparison.get('reason', 'No specific reason provided')}")
                                         if 'original_date' in items[tweet_id]:
                                             logger.info(f"   Date: {items[tweet_id]['original_date']}")
                                 
-                                logger.info(f"\n�� Summary: Removed {removed_count} duplicate tweets, kept {len(kept_items)} unique tweets")
+                                logger.info(f"\n Summary: Removed {removed_count} duplicate tweets, kept {len(kept_items)} unique tweets")
                             return kept_items
                 except (json.JSONDecodeError, KeyError, TypeError, IndexError) as e:
                     logger.error(f"Failed to parse duplicate detection response: {str(e)}")
@@ -531,8 +531,8 @@ Return ONLY a JSON object in this exact format:
                                 formatted_date = ''
                             
                             filtered_item = {
-                                'author': item.get('author', ''),
-                                'text': extracted_text,
+                                'attribution': item.get('author', ''),
+                                'content': extracted_text,
                                 'url': item.get('url', ''),
                                 'original_date': formatted_date
                             }

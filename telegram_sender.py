@@ -82,21 +82,12 @@ class TelegramSender:
                     i += 1
                     continue
                     
-                # Format tweet lines (author: text) with URL on next line
-                if ':' in line and not line.startswith('http'):
+                # Format tweet lines with URL on next line
+                if not line.startswith('http'):
                     try:
-                        author, content = line.split(':', 1)
-                        url = ""
-                        
-                        # Check next line for URL
-                        if i + 1 < len(lines) and lines[i + 1].strip().startswith('http'):
-                            url = lines[i + 1].strip()
-                            i += 2
-                        else:
-                            i += 1
-                            
-                        formatted_lines.append(f"- <b>{html.escape(author.strip())}</b>: <a href='{url}'>{html.escape(content.strip())}</a>")
-                            
+                        # Add line as is since formatting is handled in format_category_summary
+                        formatted_lines.append(html.escape(line))
+                        i += 1
                     except Exception as e:
                         log_error(logger, e, f"Failed to format tweet line: {line}")
                         formatted_lines.append(line)
@@ -165,7 +156,7 @@ class TelegramSender:
                 logger.error(f"Skipping invalid channel: {channel_id}")
                 return False
             
-            formatted_text = await self.format_text(content['text'])
+            formatted_text = await self.format_text(content['content'])
             if not formatted_text:
                 logger.error(f"Empty content for {category}")
                 return False
@@ -255,35 +246,35 @@ class TelegramSender:
                     subcategory_text += f" {emoji}"
                 lines.append(subcategory_text)
                 
-                # Group tweets by author
-                author_tweets = {}
+                # Group tweets by attribution
+                attribution_tweets = {}
                 for tweet in tweets:
-                    author = tweet.get('author', '')
-                    text = tweet.get('text', '')
+                    attribution = tweet.get('attribution', '')
+                    content = tweet.get('content', '')
                     url = tweet.get('url', '')
                     
-                    if author and text and url:
-                        if author not in author_tweets:
-                            author_tweets[author] = []
-                        author_tweets[author].append((text, url))
+                    if attribution and content and url:
+                        if attribution not in attribution_tweets:
+                            attribution_tweets[attribution] = []
+                        attribution_tweets[attribution].append((content, url))
                 
-                # Format consolidated tweets for each author
-                for author, tweet_list in author_tweets.items():
+                # Format consolidated tweets for each attribution
+                for attribution, tweet_list in attribution_tweets.items():
                     if len(tweet_list) == 1:
                         # Single tweet format
-                        text, url = tweet_list[0]
-                        lines.append(f"- <b>{author}</b> <a href='{url}'>{html.escape(text)}</a>")
+                        content, url = tweet_list[0]
+                        lines.append(f"- <b>{attribution}</b> <a href='{url}'>{html.escape(content)}</a>")
                     else:
                         # Multiple tweets consolidated format
                         consolidated = []
-                        for text, url in tweet_list:
-                            # Create short summary (first part of text up to a sensible break)
-                            summary = text.split('.')[0].split(';')[0].strip()
+                        for content, url in tweet_list:
+                            # Create short summary (first part of content up to a sensible break)
+                            summary = content.split('.')[0].split(';')[0].strip()
                             if len(summary) > 50:  # Truncate if too long
                                 summary = summary[:47] + "..."
                             consolidated.append(f"<a href='{url}'>{html.escape(summary)}</a>")
                         
-                        lines.append(f"- <b>{author}</b>: {' • '.join(consolidated)}")
+                        lines.append(f"- <b>{attribution}</b> {' • '.join(consolidated)}")
                 
                 lines.append("")  # Empty line between subcategories
             
@@ -350,21 +341,21 @@ async def load_json_file(file_path):
 async def process_category(sender, category, content, channel_id):
     """Process and send a category summary with retry"""
     try:
-        if not isinstance(content, dict) or 'text' not in content:
+        if not isinstance(content, dict) or 'content' not in content:
             logger.error(f"Invalid content structure for {category}")
             return False
             
-        raw_text = content['text']
-        if not raw_text:
-            logger.error(f"Empty text for {category}")
+        raw_content = content['content']
+        if not raw_content:
+            logger.error(f"Empty content for {category}")
             return False
             
-        formatted_text = await sender.format_text(raw_text)
-        if not formatted_text:
-            logger.error(f"Empty formatted text for {category}")
+        formatted_content = await sender.format_text(raw_content)
+        if not formatted_content:
+            logger.error(f"Empty formatted content for {category}")
             return False
             
-        return await sender.send_message(channel_id=channel_id, text=formatted_text)
+        return await sender.send_message(channel_id=channel_id, text=formatted_content)
         
     except Exception as e:
         log_error(logger, e, f"Failed to process category: {category}")

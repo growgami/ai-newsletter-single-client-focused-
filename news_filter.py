@@ -152,8 +152,8 @@ class NewsFilter:
             "{category}": {{
                 "Subcategory Name": [
                     {{
-                        "author": "handle",
-                        "text": "exact tweet text",
+                        "attribution": "handle",
+                        "content": "exact content",
                         "url": "tweet_url"
                     }}
                 ]
@@ -164,7 +164,7 @@ class NewsFilter:
         1. ONLY include tweets that clearly relate to {category} based on the category context
         2. Create 2-4 clear, descriptive subcategories for the relevant tweets
         3. Each relevant tweet must be in exactly one subcategory
-        4. Preserve exact tweet text and metadata
+        4. Preserve exact content and metadata
         5. Irrelevant tweets should be excluded completely
 
         Example Output Structure:
@@ -172,15 +172,15 @@ class NewsFilter:
             "SUI": {{
                 "Project Launches": [
                     {{
-                        "author": "lianyanshe",
-                        "text": "Walrus, the top project on Sui, will launch its mainnet...",
+                        "attribution": "lianyanshe",
+                        "content": "Walrus, the top project on Sui, will launch its mainnet...",
                         "url": "https://twitter.com/..."
                     }}
                 ],
                 "Investment and Market Dynamics": [
                     {{
-                        "author": "EmanAbio",
-                        "text": "Sui claims it doesn't need Solana apps...",
+                        "attribution": "EmanAbio",
+                        "content": "Sui claims it doesn't need Solana apps...",
                         "url": "https://twitter.com/..."
                     }}
                 ]
@@ -250,7 +250,7 @@ class NewsFilter:
                             logger.error(f"Invalid tweets format in {subcat}: {tweets}")
                             return False
                         for tweet in tweets:
-                            required_fields = ['author', 'text', 'url']
+                            required_fields = ['attribution', 'content', 'url']
                             missing = [f for f in required_fields if f not in tweet]
                             if missing:
                                 logger.error(f"Missing required fields {missing} in tweet: {tweet}")
