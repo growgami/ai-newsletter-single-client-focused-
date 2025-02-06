@@ -18,15 +18,16 @@ An AI-powered news aggregator and summarizer for crypto and web3 content. The se
 - **Smart Distribution**
   - Automated Telegram channel distribution
   - Category-specific channels
-  - Daily summaries at 6 AM UTC
+  - Daily summaries at 4 AM UTC
   - Customizable delivery schedules
 
 ## 🔧 Prerequisites
 
 - Python 3.10 or higher
+- Node.js and npm
 - 2GB RAM minimum
 - Twitter/X account with TweetDeck access
-- Telegram Bot Token and Channel IDs
+- Telegram Bot Token
 - DeepSeek API Key
 
 ## 📦 Installation
@@ -37,149 +38,106 @@ git clone [repository-url]
 cd ai-newsletter
 ```
 
-2. **Set up Python environment**
+2. **Install Node.js and PM2**
 ```bash
-# Create virtual environment
-python -m venv venv
+# Install Node.js (Ubuntu/Debian)
+curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+sudo apt-get install -y nodejs
 
-# Activate virtual environment
-# For Linux/Mac:
-source venv/bin/activate
-# For Windows:
-venv\Scripts\activate
+# Install PM2 globally
+sudo npm install pm2 -g
 ```
 
-3. **Install dependencies**
+3. **Install Python dependencies**
 ```bash
-pip install -r requirements.txt
+# Install system dependencies
+sudo apt-get update
+sudo apt-get install python3 python3-pip
+
+# Install Python packages
+pip3 install -r requirements.txt
+
+# Install Playwright browsers
+playwright install chromium
 ```
 
-4. **Install Playwright browsers**
-```bash
-playwright install
-```
-
-5. **Configure environment variables**
-   Create a `.env` file using `.env.example` as template:
+4. **Configure environment variables**
+Create a `.env` file:
 ```env
 # Twitter/X Credentials
 TWITTER_USERNAME=your_username
 TWITTER_PASSWORD=your_password
-TWITTER_VERIFICATION_CODE=your_2fa_code
+TWITTER_2FA=your_2fa_code
 TWEETDECK_URL=https://tweetdeck.twitter.com/
 
 # AI Integration
 DEEPSEEK_API_KEY=your_api_key
+OPENAI_API_KEY=your_api_key
 
 # Telegram Configuration
 TELEGRAM_BOT_TOKEN=your_bot_token
-TELEGRAM_POLKADOT_CHANNEL_ID=channel_id
-TELEGRAM_IOTA_CHANNEL_ID=channel_id
-TELEGRAM_ARBITRUM_CHANNEL_ID=channel_id
-TELEGRAM_NEAR_CHANNEL_ID=channel_id
-TELEGRAM_AI_AGENT_CHANNEL_ID=channel_id
-TELEGRAM_DEFI_CHANNEL_ID=channel_id
-TELEGRAM_TEST_CHANNEL_ID=channel_id
+TELEGRAM_CHANNEL_ID=your_channel_id
 
-# Performance Settings
-MONITOR_INTERVAL=0.1       # Tweet check interval in seconds
-MAX_RETRIES=3             # Maximum retries for operations
-RETRY_DELAY=2.0           # Base delay between retries
-MAX_DAYS_TO_KEEP=7        # Days to keep historical data
-MAX_FILE_SIZE_MB=50       # Maximum file size for garbage collection
-GC_CHECK_INTERVAL=3600    # Garbage collection interval in seconds
+# Processing Settings
+ALPHA_THRESHOLD=0.8
+RISK_THRESHOLD=0.4
 ```
 
-## 🚀 Usage
+## 🚀 Deployment
 
-### Starting the Bot
+The service uses PM2 for process management and consists of two main processes:
+
+1. **tweet-scraper**: Handles browser automation and tweet collection
+2. **newsletter**: Processes tweets and sends updates
+
+### Starting the Service
+
 ```bash
-python main.py
+# Start all processes
+pm2 start ecosystem.config.js
+
+# Save process list
+pm2 save
+
+# Setup PM2 startup script
+pm2 startup
 ```
 
-### Automated Operations
-The service will automatically:
-1. Initialize browser and authenticate with Twitter/X
-2. Monitor configured TweetDeck columns continuously
-3. Process and score new tweets using DeepSeek API
-4. Generate categorized summaries
-5. Distribute content to appropriate Telegram channels
-6. Perform daily cleanup and maintenance
+### Process Management
+
+```bash
+# Monitor processes
+pm2 monit
+
+# View logs
+pm2 logs tweet-scraper
+pm2 logs newsletter
+
+# Restart processes
+pm2 restart tweet-scraper
+pm2 restart newsletter
+
+# List all processes
+pm2 list
+```
 
 ## 📁 Project Structure
 
 ```
 ai-newsletter/
-├── main.py                 # Application entry point and orchestration
-├── browser_automation.py   # Playwright-based browser automation
-├── tweet_scraper.py       # Tweet collection and monitoring
-├── data_processor.py      # Raw data processing pipeline
-├── alpha_filter.py        # Tweet scoring and relevance filtering
-├── content_filter.py      # Content refinement and categorization
-├── news_filter.py         # News categorization and filtering
-├── telegram_sender.py     # Telegram distribution system
-├── garbage_collector.py   # Memory and storage management
-├── category_mapping.py    # Category definitions and mapping
-├── error_handler.py       # Error handling and retry logic
-├── data/                  # Data storage
-│   ├── raw/              # Raw scraped data
-│   ├── processed/        # Processed data
-│   ├── filtered/         # Filtered content
-│   │   ├── alpha_filtered/   # Relevance-filtered content
-│   │   ├── content_filtered/ # Category-filtered content
-│   │   └── news_filtered/    # Final news summaries
-│   └── session/          # Browser session data
-└── logs/                 # Application logs
-```
-
-## 📊 Category Structure
-
-The bot processes content for the following ecosystems:
-
-### Main Categories
-- **NEAR Ecosystem**: Development, partnerships, governance
-- **Polkadot Ecosystem**: Parachains, crowdloans, governance
-- **Arbitrum Ecosystem**: L2 developments, DeFi, governance
-- **IOTA Ecosystem**: Smart contracts, IoT, partnerships
-- **AI Agents**: AI developments, agent ecosystems
-- **DeFi**: Protocols, trends, market analysis
-
-Each category has specific filters and scoring criteria defined in `category_mapping.py`.
-
-## 🚀 Deployment
-
-### Production Deployment (Linux)
-
-1. **Set up service file**
-```bash
-sudo cp newsbot.service /etc/systemd/system/
-```
-
-2. **Create service user and set permissions**
-```bash
-# Create service user
-sudo useradd -r -s /bin/false newsbot
-
-# Set ownership
-sudo chown -R newsbot:newsbot /opt/ai_newsletter
-```
-
-3. **Enable and start service**
-```bash
-sudo systemctl enable newsbot
-sudo systemctl start newsbot
-```
-
-### Monitoring
-
-- Check service status:
-```bash
-sudo systemctl status newsbot
-```
-
-- View logs:
-```bash
-journalctl -u newsbot -f
+├── ecosystem.config.js    # PM2 process configuration
+├── scraper_process.py    # Tweet scraping orchestration
+├── newsletter_process.py # Newsletter processing orchestration
+├── browser_automation.py # Playwright browser automation
+├── tweet_scraper.py     # Tweet collection logic
+├── error_handler.py     # Error handling utilities
+├── garbage_collector.py # Memory management
+├── data/
+│   ├── raw/            # Raw tweet data
+│   ├── processed/      # Processed tweets
+│   ├── filtered/       # Filtered content
+│   └── session/        # Browser session data
+└── logs/               # Application logs
 ```
 
 ## 🔍 Troubleshooting
@@ -187,22 +145,20 @@ journalctl -u newsbot -f
 Common issues and solutions:
 
 1. **Browser Automation Issues**
-   - Ensure Playwright browsers are installed
-   - Check Twitter/X credentials
-   - Verify 2FA settings
+   - Check browser session in data/session/
+   - Verify Twitter credentials
+   - Review tweet_scraper_error.log
 
-2. **Memory Issues**
-   - Monitor RAM usage
-   - Adjust garbage collection settings
-   - Check log files for memory warnings
+2. **Processing Issues**
+   - Check newsletter_error.log
+   - Verify API keys
+   - Monitor memory usage with `pm2 monit`
 
-3. **API Rate Limits**
-   - Monitor DeepSeek API usage
-   - Adjust scraping intervals
-   - Check error logs for rate limit messages
+3. **Process Management**
+   - Use `pm2 logs` to check for errors
+   - Monitor process restarts with `pm2 list`
+   - Check system resources with `top` or `htop`
 
 ## 📄 License
 
-Copyright © 2024 Growgami. All rights reserved.
-
-This software is proprietary and confidential. Unauthorized copying, transfer, or reproduction of the contents of this software, via any medium, is strictly prohibited. 
+Copyright © 2024 Growgami. All rights reserved. 
