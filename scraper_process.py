@@ -138,24 +138,16 @@ class TweetScraperProcess:
         
         while self.is_running:
             try:
-                # Monitor for new tweets
-                self.monitor_stats['total_checks'] += 1
                 results = await self.monitor_tweets()
-                
-                if results:
-                    total_new_tweets = sum(count for _, count in results)
-                    self.monitor_stats['total_tweets_found'] += total_new_tweets
-                    
-                # Reset error counter on success
                 consecutive_errors = 0
-                
-                # Brief pause between checks
-                await asyncio.sleep(self.config['monitor_interval'])
-                
             except Exception as e:
-                self.monitor_stats['errors'] += 1
                 consecutive_errors += 1
                 logger.error(f"Error in scraping loop: {str(e)}")
+                
+                # Add exponential backoff
+                backoff = min(60, 2 ** consecutive_errors)  # Max 60 seconds
+                logger.info(f"Backing off for {backoff} seconds")
+                await asyncio.sleep(backoff)
                 
                 if consecutive_errors >= max_consecutive_errors:
                     logger.critical("Too many consecutive errors, attempting browser reinitialization")
@@ -164,9 +156,7 @@ class TweetScraperProcess:
                         consecutive_errors = 0
                     except Exception as reinit_error:
                         logger.error(f"Failed to reinitialize browser: {str(reinit_error)}")
-                        
-                # Exponential backoff on error
-                await asyncio.sleep(min(60, 2 ** consecutive_errors))  # Max 60 seconds
+                        await asyncio.sleep(5)  # Brief delay after failed reinit
 
     async def shutdown(self):
         """Cleanup and shutdown"""
