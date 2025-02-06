@@ -39,16 +39,17 @@ class GarbageCollector:
     async def run_cleanup(self):
         """Run memory cleanup tasks"""
         try:
-            # Memory cleanup
-            await self.cleanup_memory()
-            
             # Force garbage collection
             gc.collect()
             
-            # Drop system caches on Linux
-            self.drop_system_caches()
+            # Log memory usage
+            memory_info = self.process.memory_info()
+            memory_percent = self.process.memory_percent()
             
-            logger.info("Completed garbage collection cycle")
+            logger.info(
+                f"Memory Status: Process using {memory_percent:.1f}% "
+                f"({memory_info.rss / 1024 / 1024:.1f} MB)"
+            )
             
         except Exception as e:
             logger.error(f"Error during cleanup: {str(e)}")
