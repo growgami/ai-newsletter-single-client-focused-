@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import asyncio
 from datetime import datetime
+from error_handler import with_retry, RetryConfig, log_error
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,12 @@ class TweetScraper:
         
         # Setup logging
         self.logger = logging.getLogger(__name__)
+        
+        self.retry_config = RetryConfig(
+            max_retries=3,
+            base_delay=self.min_scrape_interval,
+            max_delay=self.max_backoff
+        )
         
     async def identify_columns(self):
         """Identify all columns in the TweetDeck"""
@@ -103,6 +110,7 @@ class TweetScraper:
         except Exception as e:
             logger.error(f"Error saving latest tweets: {str(e)}")
             
+    @with_retry(RetryConfig(max_retries=3, base_delay=0.1, max_delay=5.0))
     async def get_column_tweets(self, column_id, is_monitoring=False):
         """Get all tweets from a specific column with rate limiting"""
         try:
@@ -126,15 +134,8 @@ class TweetScraper:
             return tweets
             
         except Exception as e:
-            # Increment error count and implement backoff
-            self.error_count[column_id] = self.error_count.get(column_id, 0) + 1
-            backoff = min(self.min_scrape_interval * (2 ** self.error_count[column_id]), self.max_backoff)
-            
-            logger.error(f"Error getting tweets from column {column_id} (attempt {self.error_count[column_id]}): {str(e)}")
-            logger.info(f"Backing off for {backoff:.1f} seconds")
-            
-            await asyncio.sleep(backoff)
-            return []
+            logger.error(f"Error getting tweets from column {column_id}: {str(e)}", exc_info=True)
+            raise
             
     async def _get_column_tweets_internal(self, column_id, is_monitoring=False):
         """Internal method with the original get_column_tweets logic"""
