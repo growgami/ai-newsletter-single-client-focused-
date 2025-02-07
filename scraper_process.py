@@ -132,18 +132,11 @@ class TweetScraperProcess:
             raise  # Propagate error to trigger restart
 
     async def check_memory(self):
-        """Check memory usage including browser subprocess"""
+        """Check memory usage of main process"""
         try:
-            # Get memory for main process and children (browser)
-            total_memory = 0
-            for proc in [self.process] + self.process.children(recursive=True):
-                try:
-                    total_memory += proc.memory_info().rss / (1024 * 1024)  # Convert to MB
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
-
-            if total_memory > self.max_memory_mb:
-                logger.warning(f"Memory usage too high ({total_memory:.1f}MB), restarting browser")
+            memory_usage = self.process.memory_info().rss / (1024 * 1024)  # Convert to MB
+            if memory_usage > self.max_memory_mb:
+                logger.warning(f"Memory usage too high ({memory_usage:.1f}MB), restarting browser")
                 await self.initialize_browser()
                 return True
             return False
