@@ -718,8 +718,20 @@ Return ONLY a JSON object in this exact format:
                             }
                         }
                         
-                        # Save individual column file
+                        # Load and merge with existing content
                         output_file = self.output_dir / f'column_{column_id}.json'
+                        if output_file.exists():
+                            try:
+                                with open(output_file, 'r') as f:
+                                    existing_data = json.load(f)
+                                    # Merge tweets
+                                    if category_name in existing_data:
+                                        existing_tweets = existing_data[category_name]['tweets']
+                                        categorized_output[category_name]['tweets'] = result['tweets'] + existing_tweets
+                            except Exception as e:
+                                logger.error(f"Error merging with existing content: {str(e)}")
+                        
+                        # Save merged content
                         with open(output_file, 'w') as f:
                             json.dump(categorized_output, f, indent=2)
                             
