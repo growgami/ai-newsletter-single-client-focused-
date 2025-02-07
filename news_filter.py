@@ -7,7 +7,7 @@ from datetime import datetime
 import asyncio
 from openai import AsyncOpenAI
 from collections import defaultdict
-from category_mapping import CATEGORY_MAP, CATEGORY_FOCUS
+from category_mapping import CATEGORY, CATEGORY_FOCUS
 import sys
 
 logger = logging.getLogger(__name__)
@@ -39,8 +39,8 @@ class NewsFilter:
     def __init__(self, config):
         self.config = config
         self.data_dir = Path('data')
-        self.input_dir = self.data_dir / 'filtered' / 'content_filtered'
-        self.output_dir = self.data_dir / 'filtered' / 'news_filtered'
+        self.input_dir = self.data_dir / 'filtered' / 'content_filtered'  # Input from content_filter
+        self.output_dir = self.data_dir / 'filtered' / 'news_filtered'  # Output directory
         
         # Store API keys as instance variables first
         self.deepseek_api_key = config['deepseek_api_key']
@@ -55,6 +55,14 @@ class NewsFilter:
         
         self.circuit_breaker = CircuitBreaker()
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def _get_input_file(self):
+        """Get input file path from content_filter"""
+        return self.input_dir / 'combined_filtered.json'
+
+    def _get_output_file(self):
+        """Get output file path"""
+        return self.output_dir / f'{CATEGORY.lower()}_summary.json'
 
     async def _try_deepseek_request(self, prompt):
         """Attempt to get a response from Deepseek"""
@@ -130,6 +138,15 @@ class NewsFilter:
             logger.error(f"API request failed: {str(e)}")
             return None
 
+    def _validate_tweet_fields(self, tweet):
+        """Validate tweet has all required fields"""
+        required_fields = ['attribution', 'content', 'url']  # Removed original_date
+        missing = [f for f in required_fields if f not in tweet]
+        if missing:
+            logger.error(f"Missing required fields {missing} in tweet")
+            return False
+        return True
+
     def _build_prompt(self, tweets, category):
         """Build prompt for categorizing tweets into dynamic subcategories"""
         # Get category description from mapping
@@ -152,9 +169,9 @@ class NewsFilter:
             "{category}": {{
                 "Subcategory Name": [
                     {{
-                        "attribution": "handle",
-                        "content": "exact content",
-                        "url": "tweet_url"
+                        "attribution": "original attribution",
+                        "content": "original content",
+                        "url": "original url"
                     }}
                 ]
             }}
@@ -164,23 +181,25 @@ class NewsFilter:
         1. ONLY include tweets that clearly relate to {category} based on the category context
         2. Create 2-4 clear, descriptive subcategories for the relevant tweets
         3. Each relevant tweet must be in exactly one subcategory
-        4. Preserve exact content and metadata
+        4. CRITICAL: Preserve ALL original fields and values exactly as they appear in input
         5. Irrelevant tweets should be excluded completely
+        6. DO NOT modify or rewrite any content - use exact values from input
+        7. Required fields that MUST be preserved exactly: attribution, content, url
 
         Example Output Structure:
         {{
-            "SUI": {{
-                "Project Launches": [
+            "{category}": {{
+                "Project Updates": [
                     {{
-                        "attribution": "lianyanshe",
-                        "content": "Walrus, the top project on Sui, will launch its mainnet...",
+                        "attribution": "Polkadot",
+                        "content": "Announces Major Protocol Upgrade with 50% Performance Boost",
                         "url": "https://twitter.com/..."
                     }}
                 ],
-                "Investment and Market Dynamics": [
+                "Ecosystem Growth": [
                     {{
-                        "attribution": "EmanAbio",
-                        "content": "Sui claims it doesn't need Solana apps...",
+                        "attribution": "AcalaNetwork",
+                        "content": "Surpasses $100M TVL Milestone on Polkadot",
                         "url": "https://twitter.com/..."
                     }}
                 ]
@@ -190,129 +209,172 @@ class NewsFilter:
         Return ONLY the JSON output, no explanations.
         """
 
-    async def process_column(self, column_file):
-        """Process a single column file"""
+    async def process_content(self):
+        """Process content from combined input file"""
         try:
-            logger.info(f"Starting column {column_file.name}")
-            
-            with open(column_file) as f:
-                data = json.load(f)
-            
-            category = list(data.keys())[0]
-            original_tweets = data[category]['tweets']
-            
-            if not original_tweets:
-                logger.warning(f"No tweets found in column {column_file.name}")
+            # Load input file
+            input_file = self._get_input_file()
+            if not input_file.exists():
+                logger.error(f"No input file found at: {input_file}")
                 return False
-            
-            logger.info(f"Processing {len(original_tweets)} tweets from {category}")
-            
-            prompt = self._build_prompt(original_tweets, category)
+
+            try:
+                with open(input_file, 'r') as f:
+                    data = json.load(f)
+            except Exception as e:
+                logger.error(f"Error loading input file: {str(e)}")
+                return False
+
+            # Get tweets from input
+            tweets = data.get(CATEGORY, {}).get('tweets', [])
+            if not tweets:
+                logger.warning("No tweets found in input file")
+                return False
+
+            # Validate input tweets have required fields
+            valid_tweets = []
+            for tweet in tweets:
+                if self._validate_tweet_fields(tweet):
+                    valid_tweets.append(tweet)
+                else:
+                    logger.warning(f"Skipping tweet with missing fields: {tweet.get('url', 'unknown')}")
+
+            if not valid_tweets:
+                logger.error("No valid tweets found after field validation")
+                return False
+
+            logger.info(f"Processing {len(valid_tweets)} valid tweets from {CATEGORY}")
+
+            # Build prompt for categorization
+            prompt = self._build_prompt(valid_tweets, CATEGORY)
             response = await self._api_request(prompt)
-            
+
             if response:
                 try:
-                    # Log raw response for debugging
-                    logger.debug(f"Raw response: {response}")
-                    
                     # Validate JSON structure
                     result = json.loads(response)
                     if not isinstance(result, dict):
                         logger.error(f"Invalid response format - not a dictionary: {response}")
                         return False
-                        
-                    if category not in result:
-                        logger.error(f"Missing category '{category}' in response: {response}")
+
+                    if CATEGORY not in result:
+                        logger.error(f"Missing category '{CATEGORY}' in response: {response}")
                         return False
-                        
+
                     # Validate subcategories and tweets
-                    subcategories = result[category]
+                    subcategories = result[CATEGORY]
                     if not isinstance(subcategories, dict) or not subcategories:
                         logger.error(f"Invalid subcategories format: {subcategories}")
                         return False
-                    
+
                     # Count total filtered tweets
                     filtered_tweets = sum(len(tweets) for tweets in subcategories.values())
-                    filtered_out = len(original_tweets) - filtered_tweets
-                    
+                    filtered_out = len(valid_tweets) - filtered_tweets
+
                     # Log filtering results
-                    logger.info(f"📊 Filtering Results for {category}:")
-                    logger.info(f"   • Original tweets: {len(original_tweets)}")
+                    logger.info(f"📊 Filtering Results for {CATEGORY}:")
+                    logger.info(f"   • Original tweets: {len(valid_tweets)}")
                     logger.info(f"   • Kept tweets: {filtered_tweets}")
                     logger.info(f"   • Filtered out: {filtered_out}")
                     logger.info(f"   • Subcategories created: {len(subcategories)}")
                     for subcat, tweets in subcategories.items():
                         logger.info(f"     - {subcat}: {len(tweets)} tweets")
-                    
-                    # Check each subcategory has required tweet fields
+
+                    # Validate all tweets in response
                     for subcat, tweets in subcategories.items():
                         if not isinstance(tweets, list):
                             logger.error(f"Invalid tweets format in {subcat}: {tweets}")
                             return False
                         for tweet in tweets:
-                            required_fields = ['attribution', 'content', 'url']
-                            missing = [f for f in required_fields if f not in tweet]
-                            if missing:
-                                logger.error(f"Missing required fields {missing} in tweet: {tweet}")
+                            if not self._validate_tweet_fields(tweet):
+                                logger.error(f"Invalid tweet structure in {subcat}")
                                 return False
-                    
-                    # If validation passes, save the file
-                    output_path = self.output_dir / f"{category.lower()}_summary.json"
-                    temp_file = output_path.with_suffix('.tmp')
+
+                    # Save output atomically
+                    output_file = self._get_output_file()
+                    temp_file = output_file.with_suffix('.tmp')
                     try:
                         with open(temp_file, 'w') as f:
                             json.dump(result, f, indent=2)
-                        temp_file.replace(output_path)
-                        logger.info(f"✅ Successfully saved {output_path.name}")
+                        temp_file.replace(output_file)
+                        logger.info(f"✅ Successfully saved {output_file.name}")
                         return True
                     except Exception as e:
-                        logger.error(f"Error saving file: {str(e)}")
+                        logger.error(f"Error saving output: {str(e)}")
                         if temp_file.exists():
                             temp_file.unlink()
                         return False
-                        
+
                 except json.JSONDecodeError as e:
                     logger.error(f"Invalid JSON response: {str(e)}\nResponse: {response}")
                     return False
                 except Exception as e:
                     logger.error(f"Error processing response: {str(e)}\nResponse: {response}")
                     return False
-            
-            logger.warning(f"No valid response for {column_file.name}")
+
+            logger.warning("No valid response received")
             return False
-            
+
         except Exception as e:
-            logger.error(f"Error processing column {column_file.name}: {str(e)}")
+            logger.error(f"Error in process_content: {str(e)}")
             return False
 
     async def process_all(self):
-        """Process all content-filtered columns one at a time"""
+        """Process all content"""
         try:
-            # Find all column files
-            columns = list(self.input_dir.glob('column_*.json'))
-            if not columns:
-                logger.info("No columns to process")
-                return
-            
-            # Process one column at a time
-            for column_file in columns:
-                try:
-                    success = await self.process_column(column_file)
-                    if success:
-                        logger.info(f"✅ {column_file.name} processed successfully")
-                    else:
-                        logger.warning(f"❌ {column_file.name} processing failed")
-                    
-                    # Brief pause between columns
-                    if column_file != columns[-1]:
-                        await asyncio.sleep(5)
-                        
-                except Exception as e:
-                    logger.error(f"Error processing {column_file.name}: {str(e)}")
-                    continue
-                
+            logger.info("Starting news filtering")
+            return await self.process_content()
         except Exception as e:
             logger.error(f"Error in process_all: {str(e)}")
+            return False
+
+    def _validate_summary_file(self, file_path: Path) -> bool:
+        """Validate summary file exists and has correct format"""
+        try:
+            if not file_path.exists():
+                logger.error(f"Summary file not found: {file_path}")
+                return False
+                
+            with open(file_path, 'r') as f:
+                data = json.load(f)
+                
+            # Validate basic structure
+            if not isinstance(data, dict):
+                logger.error("Summary file is not a valid JSON object")
+                return False
+                
+            # Validate category exists
+            if CATEGORY not in data:
+                logger.error(f"Missing category {CATEGORY} in summary")
+                return False
+                
+            category_data = data[CATEGORY]
+            if not isinstance(category_data, dict):
+                logger.error("Invalid category data structure")
+                return False
+                
+            # Validate subcategories
+            for subcategory, tweets in category_data.items():
+                if not isinstance(tweets, list):
+                    logger.error(f"Invalid tweets format in {subcategory}")
+                    return False
+                    
+                # Validate tweet structure
+                for tweet in tweets:
+                    required_fields = ['attribution', 'content', 'url']
+                    if not all(field in tweet for field in required_fields):
+                        logger.error(f"Missing required fields in tweet under {subcategory}")
+                        return False
+            
+            logger.info(f"✅ Summary file validation successful: {file_path.name}")
+            return True
+            
+        except json.JSONDecodeError:
+            logger.error(f"Invalid JSON in summary file: {file_path}")
+            return False
+        except Exception as e:
+            logger.error(f"Error validating summary file: {str(e)}")
+            return False
 
 if __name__ == "__main__":
     # Setup logging

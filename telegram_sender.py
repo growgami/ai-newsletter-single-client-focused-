@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 import re
 import sys
 from error_handler import RetryConfig, with_retry, TelegramError, log_error, DataProcessingError
-from category_mapping import TELEGRAM_CHANNEL_MAP, EMOJI_MAP
+from category_mapping import TELEGRAM_CHANNEL_MAP, EMOJI_MAP, CATEGORY
 import time
 
 # Setup logging
@@ -284,47 +284,57 @@ class TelegramSender:
             log_error(logger, e, f"Failed to format {category} summary")
             return ""
 
-    async def process_news_summary(self, summary_file: Path):
-        """Process a news summary file and send to test channel"""
+    def _get_input_file(self):
+        """Get input file path - always polkadot_summary.json"""
+        return Path('data/filtered/news_filtered/polkadot_summary.json')
+
+    async def process_news_summary(self):
+        """Process news summary file and send to all configured channels"""
         try:
-            # Load and validate summary
-            data = await load_json_file(summary_file)
+            # Get and validate input file
+            input_file = self._get_input_file()
+            if not await self._validate_summary_file(input_file):
+                logger.error("Summary file validation failed")
+                return False
+            
+            # Load summary data
+            data = await load_json_file(input_file)
             if not data:
-                logger.error(f"Empty summary file: {summary_file}")
+                logger.error("Failed to load summary data")
                 return False
             
-            # Get category from filename (e.g., "sei_summary.json" -> "SEI")
-            category = summary_file.stem.split('_')[0].upper()
-            if not category:
-                logger.error(f"Could not determine category from filename: {summary_file}")
-                return False
-            
-            # Use test channel ID
-            channel_id = os.getenv('TELEGRAM_TEST_CHANNEL_ID')
-            if not channel_id:
-                logger.error("Test channel ID not found in environment variables")
-                return False
-            
-            # Format summary
-            formatted_text = await self.format_category_summary(category, data)
+            # Format summary once
+            formatted_text = await self.format_category_summary(CATEGORY, data)
             if not formatted_text:
-                logger.error(f"Failed to format summary for {category}")
+                logger.error("Failed to format summary")
                 return False
             
-            # Format and send message
-            html_text = await self.format_text(formatted_text)
-            success = await self.send_message(channel_id, html_text)
-            
-            if success:
-                logger.info(f"✅ Successfully sent {category} summary")
+            success = True
+            # Send to each configured channel
+            for category, channel_id in TELEGRAM_CHANNEL_MAP.items():
+                if not channel_id:
+                    logger.warning(f"No channel ID configured for {category}, skipping...")
+                    continue
+                
+                # Validate channel ID format
+                if not channel_id.strip('-').isdigit():
+                    logger.warning(f"Invalid channel ID format for {category}, skipping...")
+                    continue
+                
+                # Send message
+                if await self.send_message(channel_id, formatted_text):
+                    logger.info(f"✅ Successfully sent summary to {category} channel")
+                else:
+                    logger.error(f"Failed to send summary to {category} channel")
+                    success = False
+                
+                # Brief pause between sends
+                await asyncio.sleep(2)
             
             return success
             
-        except TelegramError as e:
-            logger.error(f"Failed to send {summary_file.stem}: {str(e)}")
-            return False
         except Exception as e:
-            logger.error(f"Error processing {summary_file.stem}: {str(e)}")
+            log_error(logger, e, "Failed to process news summary")
             return False
 
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
@@ -386,7 +396,7 @@ if __name__ == "__main__":
             for summary_file in summary_files:
                 try:
                     logger.info(f"Processing {summary_file.name}")
-                    await sender.process_news_summary(summary_file)
+                    await sender.process_news_summary()
                     # Brief pause between messages
                     await asyncio.sleep(2)
                 except Exception as e:

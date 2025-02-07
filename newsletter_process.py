@@ -40,6 +40,16 @@ class NewsletterProcess:
         # Initialize scheduler
         self.scheduler = AsyncIOScheduler()
         
+        # Get absolute path to project root
+        self.base_dir = Path(__file__).parent.absolute()
+        
+        # Update paths to be absolute
+        self.data_dir = self.base_dir / 'data'
+        self.log_dir = self.base_dir / 'logs'
+        
+        # Initialize directories first
+        self._initialize_directories()
+        
         # Initialize components
         self.data_processor = DataProcessor()
         self.alpha_filter = AlphaFilter(self._get_config())
@@ -63,36 +73,43 @@ class NewsletterProcess:
             }
         }
 
-        # Ensure directories exist with proper permissions
-        directories = [
-            Path('logs'),
-            Path('data/raw'),
-            Path('data/processed'),
-            Path('data/filtered/alpha_filtered'),
-            Path('data/filtered/content_filtered'),
-            Path('data/filtered/news_filtered')
-        ]
-        
-        for directory in directories:
-            directory.mkdir(parents=True, exist_ok=True)
-            # Set 755 permissions (rwxr-xr-x)
-            os.chmod(directory, 0o755)
-        
-        # Set 644 permissions for log file (rw-r--r--)
-        log_file = Path('logs/newsletter.log')
-        if not log_file.exists():
-            log_file.touch()
-        os.chmod(log_file, 0o644)
-
-        # Get absolute path to project root
-        self.base_dir = Path(__file__).parent.absolute()
-        
-        # Update paths to be absolute
-        self.data_dir = self.base_dir / 'data'
-        self.log_dir = self.base_dir / 'logs'
-
         # Add garbage collector
         self.gc = GarbageCollector(self._get_config())
+
+    def _initialize_directories(self):
+        """Initialize all required directories with proper permissions"""
+        try:
+            # Define required directories
+            required_dirs = {
+                'logs': self.log_dir,
+                'data': self.data_dir,
+                'raw': self.data_dir / 'raw',
+                'processed': self.data_dir / 'processed',
+                'alpha_filtered': self.data_dir / 'filtered' / 'alpha_filtered',
+                'content_filtered': self.data_dir / 'filtered' / 'content_filtered',
+                'news_filtered': self.data_dir / 'filtered' / 'news_filtered'
+            }
+            
+            # Create directories with proper permissions
+            for name, dir_path in required_dirs.items():
+                if not dir_path.exists():
+                    logger.info(f"Creating directory: {dir_path}")
+                    dir_path.mkdir(parents=True, exist_ok=True)
+                    # Set 755 permissions (rwxr-xr-x)
+                    os.chmod(dir_path, 0o755)
+                    
+            # Set up log file
+            log_file = self.log_dir / 'newsletter.log'
+            if not log_file.exists():
+                log_file.touch()
+            # Set 644 permissions for log file (rw-r--r--)
+            os.chmod(log_file, 0o644)
+            
+            logger.info("Successfully initialized all required directories")
+            
+        except Exception as e:
+            logger.error(f"Error initializing directories: {str(e)}")
+            raise
 
     def _get_config(self):
         """Get configuration from environment variables"""

@@ -6,7 +6,6 @@ import asyncio
 from datetime import datetime, timedelta
 import zoneinfo
 from error_handler import with_retry, DataProcessingError, log_error, RetryConfig
-from category_mapping import CATEGORY_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +15,6 @@ class DataProcessor:
         self.raw_dir = self.data_dir / 'raw'
         self.processed_dir = self.data_dir / 'processed'
         self.retry_config = RetryConfig(max_retries=3, base_delay=1.0, max_delay=15.0)
-        self.category_map = CATEGORY_MAP  # From category_mapping.py
         self.min_words = 2
         self.min_tweets_per_category = 3
         
@@ -151,22 +149,24 @@ class DataProcessor:
             raise DataProcessingError(f"Raw tweet loading failed: {str(e)}")
             
     def deduplicate(self, columns):
-        """Step 3.1: Remove duplicate tweets by ID"""
+        """Step 3.1: Remove duplicate tweets by ID across all columns while maintaining original column structure"""
         initial_total = sum(len(t) for t in columns.values())
         seen_ids = set()
         deduped = {}
         
-        for col_id, tweets in columns.items():
-            unique = []
-            for t in tweets:
-                if t['id'] not in seen_ids:
-                    seen_ids.add(t['id'])
-                    unique.append(t)
-            deduped[col_id] = unique
-            logger.info(f"Column {col_id}: Deduped {len(tweets)}→{len(unique)}")
+        # Process columns in order, keeping first occurrence of each tweet
+        for col_id in sorted(columns.keys()):
+            deduped[col_id] = []
+            for tweet in columns[col_id]:
+                tweet_id = tweet.get('id')
+                if tweet_id and tweet_id not in seen_ids:
+                    seen_ids.add(tweet_id)
+                    deduped[col_id].append(tweet)
             
+            logger.info(f"Column {col_id}: {len(columns[col_id])}→{len(deduped[col_id])} tweets after deduplication")
+        
         deduped_total = sum(len(t) for t in deduped.values())
-        logger.info(f"Deduplication: {initial_total} → {deduped_total} tweets (-{initial_total - deduped_total})")
+        logger.info(f"Cross-column deduplication: {initial_total} → {deduped_total} tweets (-{initial_total - deduped_total})")
         return deduped
             
     def _remove_duplicates(self, tweets):
@@ -267,27 +267,31 @@ class DataProcessor:
             return False
             
     async def _save_processed_tweets(self, processed_data, date_str):
-        """Save processed tweets without combined file"""
+        """Save processed tweets into a single combined file since all columns are one category"""
         try:
             date_dir = self.processed_dir / date_str
             date_dir.mkdir(parents=True, exist_ok=True)
             
-            # Save individual column files with metadata
+            # Combine all tweets from all columns into a single list
+            all_tweets = []
             for col_id, tweets in processed_data['columns'].items():
-                col_data = {
-                    'metadata': {
-                        'processed_at': processed_data['metadata']['processed_at'],
-                        'column_id': col_id,
-                        'tweet_count': len(tweets)
-                    },
-                    'tweets': tweets
-                }
-                
-                col_file = date_dir / f'column_{col_id}.json'
-                with open(col_file, 'w') as f:
-                    json.dump(col_data, f, indent=2)
-                
-            logger.info(f"Saved {len(processed_data['columns'])} columns to {date_dir}")
+                all_tweets.extend(tweets)
+            
+            # Create combined data structure
+            combined_data = {
+                'metadata': {
+                    'processed_at': processed_data['metadata']['processed_at'],
+                    'total_tweets': len(all_tweets)
+                },
+                'tweets': all_tweets
+            }
+            
+            # Save to a single file
+            output_file = date_dir / 'combined_tweets.json'
+            with open(output_file, 'w') as f:
+                json.dump(combined_data, f, indent=2)
+            
+            logger.info(f"Saved {len(all_tweets)} tweets to {output_file}")
             
         except Exception as e:
             log_error(logger, e, f"Failed to save processed tweets for date {date_str}")

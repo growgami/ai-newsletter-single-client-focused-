@@ -8,7 +8,7 @@ import zoneinfo
 import asyncio
 from openai import OpenAI, AsyncOpenAI
 from error_handler import with_retry, APIError, log_error, RetryConfig
-from category_mapping import CATEGORY_MAP
+from category_mapping import CATEGORY
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +41,8 @@ class AlphaFilter:
     def __init__(self, config):
         self.config = config
         self.data_dir = Path('data')
-        self.processed_dir = self.data_dir / 'processed'  # Input from raw tweets
-        self.filtered_dir = self.data_dir / 'filtered' / 'alpha_filtered'  # Output without date subfolder
+        self.processed_dir = self.data_dir / 'processed'  # Input from data_processor
+        self.filtered_dir = self.data_dir / 'filtered' / 'alpha_filtered'  # Output directory
         self.state_file = self.filtered_dir / 'state.json'  # Track processing state
         self.is_shutting_down = False
         
@@ -56,12 +56,8 @@ class AlphaFilter:
         )
         self.openai_client = AsyncOpenAI(api_key=self.openai_api_key)
         
-        # Use centralized category mapping
-        self.categories = CATEGORY_MAP
-        
         # Alpha filtering thresholds
         self.alpha_threshold = config.get('alpha_threshold', 0.8)
-        self.risk_threshold = config.get('risk_threshold', 0.4)
         
         self.circuit_breaker = CircuitBreaker()
         
@@ -73,119 +69,53 @@ class AlphaFilter:
         if self.state_file.exists():
             try:
                 with open(self.state_file, 'r') as f:
-                    return json.load(f)
+                    state = json.load(f)
+                    # Validate state before returning
+                    if self._validate_state(state):
+                        return state
+                    else:
+                        logger.warning("Invalid state file, returning default state")
             except Exception as e:
                 logger.error(f"Error loading state file: {str(e)}")
+        
+        # Return default state if file doesn't exist or is invalid
         return {
             'last_processed_date': None,
-            'columns_state': {}  # Track progress per column
-        }
-
-    def _clear_column_files(self):
-        """Clear all column output files for fresh processing"""
-        try:
-            for file in self.filtered_dir.glob('column_*.json'):
-                file.unlink()
-            logger.info("Cleared existing column files for new date")
-        except Exception as e:
-            logger.error(f"Error clearing column files: {str(e)}")
-
-    def _get_column_state(self, date_str, col_id):
-        """Get processing state for a specific column"""
-        state = self._load_state()
-        return state.get('columns_state', {}).get(str(col_id), {
-            'completed': False,
+            'columns_state': {},
             'last_chunk': 0,
-            'total_chunks': 0
-        })
-
-    def _update_column_state(self, date_str, col_id, chunk_number, total_chunks, completed=False):
-        """Update processing state for a specific column"""
-        state = self._load_state()
-        
-        # Initialize column state if needed while preserving existing states
-        if 'columns_state' not in state:
-            state['columns_state'] = {}
-        
-        # Update only the specific column while keeping others intact
-        state['columns_state'][str(col_id)] = {
-            'completed': completed,
-            'last_chunk': chunk_number,
-            'total_chunks': total_chunks
+            'total_chunks': 0,
+            'completed': False
         }
-        
-        # Update date without affecting columns_state
-        state['last_processed_date'] = date_str
-        
-        self._save_state(state)
 
     def _save_state(self, state):
         """Save processing state to file"""
         try:
-            self._atomic_write_json(self.state_file, state)
+            temp_file = self.state_file.with_suffix('.tmp')
+            with open(temp_file, 'w') as f:
+                json.dump(state, f, indent=2)
+            temp_file.replace(self.state_file)  # Atomic write
         except Exception as e:
             logger.error(f"Error saving state file: {str(e)}")
+            if temp_file.exists():
+                temp_file.unlink()
 
-    async def _try_deepseek_request(self, prompt):
-        """Attempt to get a response from Deepseek"""
-        try:
-            # Add 3 second timeout for Deepseek
-            response = await asyncio.wait_for(
-                self.deepseek_client.chat.completions.create(
-                    model="deepseek-chat",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.1,
-                    response_format={"type": "json_object"},
-                    max_tokens=4096
-                ),
-                timeout=3  # 3 second timeout
-            )
-            
-            if not response.choices:
-                logger.warning("Deepseek response contains no choices")
-                return None
-                
-            return response.choices[0].message.content
-            
-        except asyncio.TimeoutError:
-            return None
-        except Exception as e:
-            logger.warning(f"Deepseek request failed: {str(e)}")
-            return None
-            
-    async def _try_openai_request(self, prompt):
-        """Attempt to get a response from OpenAI"""
-        try:
-            # Add 10 second timeout for OpenAI
-            response = await asyncio.wait_for(
-                self.openai_client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.1,
-                    response_format={"type": "json_object"},
-                    max_tokens=4096
-                ),
-                timeout=10  # 10 second timeout
-            )
-            
-            return response.choices[0].message.content
-            
-        except asyncio.TimeoutError:
-            logger.warning("OpenAI request timed out after 10 seconds")
-            return None
-        except Exception as e:
-            logger.warning(f"OpenAI request failed: {str(e)}")
-            return None
-        
-    async def filter_content(self, content, category):
-        """Filter and score content for alpha signals in its category"""
+    def _get_input_file(self, date_str):
+        """Get input file path from data_processor"""
+        return self.processed_dir / date_str / 'combined_tweets.json'
+
+    def _get_output_file(self, date_str):
+        """Get output file path"""
+        return self.filtered_dir / f'combined_filtered.json'
+
+    async def filter_content(self, tweet, category):
+        """Filter and score content for alpha signals"""
         try:
             await self.circuit_breaker.check()
             
             # Prepare prompt with safe content access
-            prompt = self._prepare_filtering_prompt(content, category)
+            prompt = self._prepare_filtering_prompt(tweet, category)
             if prompt is None:
-                logger.warning(f"Skipping content {content.get('id', 'unknown')} due to invalid content structure")
+                logger.warning(f"Skipping tweet {tweet.get('id', 'unknown')} due to invalid content structure")
                 return None
             
             # Retry configuration
@@ -213,23 +143,33 @@ class AlphaFilter:
                     
                     # If content didn't meet criteria, return None
                     if result is None:
-                        logger.debug(f"Content {content.get('id', 'unknown')} did not meet criteria")
+                        logger.debug(f"Tweet {tweet.get('id', 'unknown')} did not meet alpha criteria")
                         return None
                     
-                    # Add metadata
-                    result['content_id'] = content.get('id', 'unknown')
-                    result['category'] = category
+                    # Map fields from input tweet to output format
+                    filtered_tweet = {
+                        'tweet': tweet.get('text', ''),  # Original tweet text
+                        'author': tweet.get('authorHandle', ''),  # Original author
+                        'url': tweet.get('url', ''),  # Original URL
+                        'tweet_id': tweet.get('id', ''),  # Original tweet ID
+                        'quoted_content': tweet.get('quotedContent', {}).get('text', '') if tweet.get('quotedContent') else '',
+                        'reposted_content': tweet.get('repostedContent', {}).get('text', '') if tweet.get('repostedContent') else '',
+                        'category': category,
+                        'processed_at': datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat(),
+                        'original_date': tweet.get('created_at', ''),
+                        'column': tweet.get('column', '')  # Preserve column info
+                    }
                     
                     # Log success
-                    logger.debug(f"Successfully filtered content {content.get('id', 'unknown')}")
-                    return result
+                    logger.debug(f"Successfully filtered tweet {tweet.get('id', 'unknown')}")
+                    return filtered_tweet
                         
                 except asyncio.TimeoutError:
-                    logger.warning(f"Timeout on attempt {attempt + 1} for content {content.get('id', 'unknown')}")
+                    logger.warning(f"Timeout on attempt {attempt + 1} for tweet {tweet.get('id', 'unknown')}")
                 except json.JSONDecodeError as e:
-                    logger.warning(f"Invalid JSON response on attempt {attempt + 1} for content {content.get('id', 'unknown')}: {str(e)}")
+                    logger.warning(f"Invalid JSON response on attempt {attempt + 1} for tweet {tweet.get('id', 'unknown')}: {str(e)}")
                 except Exception as e:
-                    logger.warning(f"Error on attempt {attempt + 1} for content {content.get('id', 'unknown')}: {str(e)}")
+                    logger.warning(f"Error on attempt {attempt + 1} for tweet {tweet.get('id', 'unknown')}: {str(e)}")
                 
                 # Exponential backoff if not last attempt
                 if attempt < max_retries - 1:
@@ -237,153 +177,31 @@ class AlphaFilter:
                     logger.info(f"Retrying in {delay} seconds...")
                     await asyncio.sleep(delay)
             
-            logger.error(f"Failed to filter content {content.get('id', 'unknown')} after {max_retries} attempts with both models")
+            logger.error(f"Failed to filter tweet {tweet.get('id', 'unknown')} after {max_retries} attempts with both models")
             return None
             
         except Exception as e:
             if "Circuit breaker open" in str(e):
-                logger.warning(f"Circuit breaker open for content {content.get('id', 'unknown')} - skipping")
+                logger.warning(f"Circuit breaker open for tweet {tweet.get('id', 'unknown')} - skipping")
                 return None
             else:
                 self.circuit_breaker.record_failure()
-                logger.error(f"Unexpected error filtering content {content.get('id', 'unknown')}: {str(e)}")
+                logger.error(f"Unexpected error filtering tweet {tweet.get('id', 'unknown')}: {str(e)}")
                 return None
-            
-    async def process_content(self, date_str=None):
-        """Process content for a given date"""
-        try:
-            if not date_str:
-                current_time = datetime.now(zoneinfo.ZoneInfo("UTC"))
-                yesterday = current_time - timedelta(days=1)
-                date_str = yesterday.strftime('%Y%m%d')
-                
-            logger.info(f"Processing content for date: {date_str}")
-            
-            # Load state and check date
-            state = self._load_state()
-            last_date = state.get('last_processed_date')
-            
-            # Check if same date
-            if last_date == date_str:
-            # Check if all chunks done - but only if we have columns to process
-                columns_state = state.get('columns_state', {})
-                if not columns_state:
-                    logger.info(f"No columns processed yet for {date_str}, starting processing")
-                else:
-                    all_complete = all(
-                        col_state.get('completed', False) 
-                        for col_state in columns_state.values()
-                )
-                if not all_complete:
-                    # Not done, continue processing
-                    logger.info(f"Incomplete chunks found for {date_str}, continuing processing")
-                else:
-                    # Done, skip
-                    logger.info(f"All chunks completed for {date_str}, skipping")
-                    return state
-            else:
-                # Not same date
-                logger.info(f"New date detected (last: {last_date}, current: {date_str})")
-                # Clear columns_state and update date
-                state['columns_state'] = {}
-                state['last_processed_date'] = date_str
-                self._save_state(state)
-                logger.info("Starting fresh processing for new date")
-            
-            # Load from date-specific input directory
-            date_dir = self.processed_dir / date_str
-            if not date_dir.exists():
-                logger.error(f"Processed directory not found: {date_dir}")
-                return state
-            
-            # Load all column files
-            column_files = list(date_dir.glob('column_*.json'))
-            if not column_files:
-                logger.error(f"No column files found in {date_dir}")
-                return state
-            
-            # Initialize processing data
-            data = {
-                'date': date_str,
-                'columns': {},
-                'metadata': {
-                    'total_items': 0,
-                    'columns_processed': 0,
-                    'processing_start': datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat()
-                }
-            }
-            
-            # Process and collect all content
-            all_scores = []
-            
-            for col_file in column_files:
-                try:
-                    column_id = col_file.stem.split('_')[1]
-                    
-                    with open(col_file, 'r') as f:
-                        col_data = json.load(f)
-                        content_items = col_data.get('tweets', [])
-                        
-                        if content_items:
-                            data['columns'][column_id] = content_items
-                            data['metadata']['total_items'] += len(content_items)
-                            data['metadata']['columns_processed'] += 1
-                            logger.info(f"Loaded {len(content_items)} items from column {column_id}")
-                        
-                except Exception as e:
-                    logger.error(f"Failed to load {col_file.name}: {str(e)}")
-                    continue
-            
-            if data['metadata']['total_items'] == 0:
-                logger.warning("No content found to process")
-                return state
-            
-            logger.info(f"Processing {data['metadata']['total_items']} items from {len(data['columns'])} columns")
-            
-            # Process one column at a time
-            for col_id in data['columns'].keys():
-                logger.info(f"Processing column {col_id}")
-                
-                try:
-                    # Process single column
-                    results = await self._process_column(
-                        data['columns'][col_id],
-                        self.categories.get(col_id),
-                        col_id,
-                        date_str,
-                        data
-                    )
-                    
-                    # Add results to total
-                    if results:
-                        all_scores.extend(results)
-                        logger.info(f"Column {col_id} completed with {len(results)} tweets")
-                    
-                except Exception as e:
-                    logger.error(f"Error processing column {col_id}: {str(e)}")
-                
-                # Delay between columns
-                await asyncio.sleep(5)
-            
-            logger.info(f"Alpha filtering complete. Found {len(all_scores)} tweets across {len(data['columns'])} columns")
-            return state
-            
-        except Exception as e:
-            logger.error(f"Error processing content: {str(e)}")
-            return None
-            
-    def _prepare_filtering_prompt(self, content, category):
+
+    def _prepare_filtering_prompt(self, tweet, category):
         """Prepare the prompt for filtering content"""
-        # Safely get content fields with defaults
         try:
-            tweet_text = content.get('text', '')
-            author = content.get('authorHandle', '')
-            quoted_text = content.get('quotedContent', {}).get('text', '') if content.get('quotedContent') else ''
-            reposted_text = content.get('repostedContent', {}).get('text', '') if content.get('repostedContent') else ''
-            url = content.get('url', '')  # Get URL from content
+            # Map fields from data_processor format
+            tweet_text = tweet.get('text', '')  # Changed from 'tweet' to 'text'
+            author = tweet.get('authorHandle', '')  # Changed from 'author' to 'authorHandle'
+            quoted_text = tweet.get('quotedContent', {}).get('text', '') if tweet.get('quotedContent') else ''  # Changed structure
+            reposted_text = tweet.get('repostedContent', {}).get('text', '') if tweet.get('repostedContent') else ''  # Changed structure
+            url = tweet.get('url', '')
+            tweet_id = tweet.get('id', '')
             
             if not tweet_text or not author:
-                logger.warning(f"Missing required content fields for ID {content.get('id', 'unknown')}")
+                logger.warning(f"Missing required content fields for tweet {tweet_id}")
                 return None
                 
             return f"""
@@ -400,7 +218,7 @@ class AlphaFilter:
     
             Scoring criteria (DO NOT include these in output):
             1. Relevance (0-1): Does the content contain ACTIONABLE alpha?
-               - Must score 0.8+ to be included
+               - Must score {self.alpha_threshold}+ to be included
                - Concrete, time-sensitive alpha with clear action points
                - Direct mention of ecosystem name + significant update
     
@@ -425,15 +243,16 @@ class AlphaFilter:
                 "author": "{author}",
                 "url": "{url}",
                 "quoted_content": "{quoted_text}",
-                "reposted_content": "{reposted_text}"
+                "reposted_content": "{reposted_text}",
+                "tweet_id": "{tweet_id}"
             }}
     
             If ANY criteria is not met, return: {{}}
             """
         except Exception as e:
-            logger.error(f"Error preparing prompt for content {content.get('id', 'unknown')}: {str(e)}")
+            logger.error(f"Error preparing prompt: {str(e)}")
             return None
-            
+
     def _validate_filter_response(self, response_text: str) -> dict:
         """Validate the filter response"""
         try:
@@ -444,7 +263,7 @@ class AlphaFilter:
                 return None
             
             # Check for required content fields
-            required_fields = ['tweet', 'author', 'url']  # Added url to required fields
+            required_fields = ['tweet', 'author', 'url', 'tweet_id']  # Added tweet_id
             if not all(key in result for key in required_fields):
                 raise ValueError(f"Missing required fields: {[k for k in required_fields if k not in result]}")
             
@@ -456,117 +275,107 @@ class AlphaFilter:
         except Exception as e:
             logger.warning(f"Invalid response format: {str(e)}")
             raise
-            
-    def _atomic_write_json(self, file_path: Path, data: dict):
-        """Atomically write JSON data to file"""
-        temp_file = file_path.with_suffix('.tmp')
-        try:
-            with open(temp_file, 'w') as f:
-                json.dump(data, f, indent=2)
-            temp_file.replace(file_path)  # Atomic on POSIX
-        except Exception as e:
-            logger.error(f"Error writing file {file_path}: {str(e)}")
-            if temp_file.exists():
-                temp_file.unlink()
-            raise
 
-    async def _process_column(self, content_items, category, col_id, date_str, data):
-        """Process a single column's content"""
+    async def _try_deepseek_request(self, prompt):
+        """Attempt to get a response from Deepseek"""
         try:
-            logger.info(f"Starting column {col_id} ({len(content_items)} items)")
-            results = []
+            # Add 3 second timeout for Deepseek
+            response = await asyncio.wait_for(
+                self.deepseek_client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.1,
+                    response_format={"type": "json_object"},
+                    max_tokens=4096
+                ),
+                timeout=3  # 3 second timeout
+            )
             
-            # Setup output file (no date subfolder)
-            output_file = self.filtered_dir / f'column_{col_id}.json'
+            if not response.choices:
+                logger.warning("Deepseek response contains no choices")
+                return None
+                
+            return response.choices[0].message.content
             
-            # Calculate total chunks
-            chunk_size = 9  # Process 9 tweets at a time
-            total_chunks = (len(content_items) + chunk_size - 1) // chunk_size
+        except asyncio.TimeoutError:
+            return None
+        except Exception as e:
+            logger.warning(f"Deepseek request failed: {str(e)}")
+            return None
+
+    async def _try_openai_request(self, prompt):
+        """Attempt to get a response from OpenAI"""
+        try:
+            # Add 10 second timeout for OpenAI
+            response = await asyncio.wait_for(
+                self.openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.1,
+                    response_format={"type": "json_object"},
+                    max_tokens=4096
+                ),
+                timeout=10  # 10 second timeout
+            )
             
-            # Load existing tweets if any
-            existing_tweets = []
+            return response.choices[0].message.content
+            
+        except asyncio.TimeoutError:
+            logger.warning("OpenAI request timed out after 10 seconds")
+            return None
+        except Exception as e:
+            logger.warning(f"OpenAI request failed: {str(e)}")
+            return None
+
+    def _clear_output_files(self):
+        """Clear all output files for fresh processing"""
+        try:
+            output_file = self._get_output_file(None)  # Get base output file
             if output_file.exists():
-                try:
-                    with open(output_file, 'r') as f:
-                        file_data = json.load(f)
-                        existing_tweets = file_data.get('tweets', [])
-                        logger.info(f"Loaded {len(existing_tweets)} existing tweets from column {col_id}")
-                except Exception as e:
-                    logger.error(f"Error loading existing tweets: {str(e)}")
-            
-            # Get column state
-            col_state = self._get_column_state(date_str, col_id)
-            start_chunk = col_state['last_chunk']
-            
-            # Process chunks
-            for i in range(start_chunk * chunk_size, len(content_items), chunk_size):
-                if self.is_shutting_down:
-                    logger.info("Graceful shutdown requested, saving progress...")
-                    self._update_column_state(date_str, col_id, i // chunk_size, total_chunks)
-                    break
-
-                chunk = content_items[i:i+chunk_size]
-                chunk_number = i // chunk_size + 1
-                
-                logger.info(f"Processing chunk {chunk_number}/{total_chunks} in column {col_id}")
-                
-                # Process chunk in parallel
-                chunk_tasks = [self.filter_content(item, category) for item in chunk]
-                chunk_results = await asyncio.gather(*chunk_tasks)
-                
-                # Add successful results with processing date
-                new_results = []
-                for r in chunk_results:
-                    if r is not None:
-                        r['processed_date'] = date_str  # Use date from input folder
-                        new_results.append(r)
-                
-                if new_results:
-                    results.extend(new_results)
-                    logger.info(f"Found {len(new_results)} new tweets in chunk {chunk_number}")
-                
-                # Update output file with accumulated results
-                file_data = {
-                    'tweets': existing_tweets + results,  # Combine existing and new tweets
-                    'metadata': {
-                        'total_tweets': len(existing_tweets) + len(results),
-                        'last_update': datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat(),
-                        'last_processed_date': date_str,
-                        'processing_dates': data.get('processing_dates', [date_str])
-                    }
-                }
-                self._atomic_write_json(output_file, file_data)
-                
-                # Update state after each chunk
-                self._update_column_state(date_str, col_id, chunk_number, total_chunks)
-                
-                # Rate limiting between chunks
-                if i + chunk_size < len(content_items):
-                    await asyncio.sleep(2)
-            
-            # Mark column as completed if not shutdown
-            if not self.is_shutting_down:
-                self._update_column_state(date_str, col_id, total_chunks, total_chunks, completed=True)
-                logger.info(f"Completed column {col_id} with {len(results)} new tweets")
-            
-            return results
-            
+                output_file.unlink()
+            logger.info("Cleared existing output files for new processing")
         except Exception as e:
-            logger.error(f"Failed processing column {col_id}: {str(e)}")
-            return []
+            logger.error(f"Error clearing output files: {str(e)}")
 
-    async def cleanup(self):
-        """Cleanup and save state before shutdown"""
-        self.is_shutting_down = True
-        logger.info("Cleaning up and saving state...")
-        # Any additional cleanup can be added here
+    def _get_processing_state(self, date_str):
+        """Get processing state for a specific date"""
+        state = self._load_state()
+        return {
+            'completed': state.get('completed', False),  # Check actual completion flag
+            'last_chunk': state.get('last_chunk', 0),
+            'total_chunks': state.get('total_chunks', 0)  # Preserve total chunks from state
+        }
+
+    def _update_processing_state(self, date_str, chunk_number, total_chunks, completed=False):
+        """Update processing state for a specific date"""
+        try:
+            state = self._load_state()
+            
+            # Update processing state
+            state['last_processed_date'] = date_str
+            state['last_chunk'] = chunk_number
+            state['total_chunks'] = total_chunks
+            state['completed'] = completed
+            state['columns_state'] = {}  # Keep this for backward compatibility
+            
+            self._save_state(state)
+            logger.info(f"Updated state: chunk {chunk_number}/{total_chunks} {'(completed)' if completed else ''}")
+        except Exception as e:
+            logger.error(f"Error updating state: {str(e)}")
 
     def _get_unprocessed_dates(self):
-        """Get list of dates with unprocessed raw tweets"""
-        processed_dates = set(self._load_state().get('processing_dates', []))
-        raw_dates = set()
-        
+        """Get list of dates with unprocessed tweets"""
+        processed_dates = set()
+        if self.state_file.exists():
+            try:
+                state = self._load_state()
+                if state.get('completed', False) and state.get('last_processed_date'):
+                    processed_dates.add(state.get('last_processed_date'))
+            except Exception as e:
+                logger.error(f"Error loading state: {str(e)}")
+
         # Find all date folders in processed directory
+        raw_dates = set()
         for date_dir in self.processed_dir.glob('*'):
             if date_dir.is_dir() and date_dir.name.isdigit() and len(date_dir.name) == 8:
                 raw_dates.add(date_dir.name)
@@ -601,49 +410,344 @@ class AlphaFilter:
         except Exception as e:
             logger.error(f"Error in process_all_dates: {str(e)}")
 
+    async def process_content(self, date_str=None):
+        """Process content for a given date"""
+        try:
+            if not date_str:
+                current_time = datetime.now(zoneinfo.ZoneInfo("UTC"))
+                date_str = current_time.strftime('%Y%m%d')
+
+            logger.info(f"Starting alpha filtering for {date_str}")
+            
+            # Check processing state
+            state = self._get_processing_state(date_str)
+            if state['completed']:
+                logger.info(f"Date {date_str} already processed completely")
+                return None
+
+            # Load input data from data_processor
+            input_file = self._get_input_file(date_str)
+            if not input_file.exists():
+                logger.error(f"No input file found at: {input_file}")
+                return None
+
+            try:
+                with open(input_file, 'r') as f:
+                    data = json.load(f)
+            except Exception as e:
+                logger.error(f"Error loading input file: {str(e)}")
+                return None
+
+            # Load existing output or create new structure
+            output_file = self._get_output_file(date_str)
+            if output_file.exists():
+                try:
+                    with open(output_file, 'r') as f:
+                        output = json.load(f)
+                except Exception as e:
+                    logger.error(f"Error loading existing output: {str(e)}")
+                    output = {
+                        'tweets': [],
+                        'metadata': {
+                            'processed_date': date_str,
+                            'total_tweets': 0,
+                            'last_update': datetime.now().isoformat()
+                        }
+                    }
+            else:
+                output = {
+                    'tweets': [],
+                    'metadata': {
+                        'processed_date': date_str,
+                        'total_tweets': 0,
+                        'last_update': datetime.now().isoformat()
+                    }
+                }
+
+            # Process tweets in chunks for rate limiting
+            tweets = data.get('tweets', [])
+            chunk_size = 5  # Process 5 tweets at a time
+            total_chunks = (len(tweets) + chunk_size - 1) // chunk_size
+            
+            # Resume from last processed chunk
+            start_chunk = state['last_chunk']
+            logger.info(f"Resuming from chunk {start_chunk + 1}/{total_chunks}")
+            
+            for i in range(start_chunk * chunk_size, len(tweets), chunk_size):
+                if self.is_shutting_down:
+                    logger.info("Graceful shutdown requested...")
+                    self._update_processing_state(date_str, i // chunk_size, total_chunks)
+                    break
+
+                chunk = tweets[i:i+chunk_size]
+                chunk_number = i // chunk_size + 1
+                
+                logger.info(f"Processing chunk {chunk_number}/{total_chunks}")
+                
+                # Process chunk in parallel
+                chunk_tasks = [self.filter_content(tweet, CATEGORY) for tweet in chunk]
+                chunk_results = await asyncio.gather(*chunk_tasks)
+                
+                # Track new tweets for this chunk
+                new_tweets = []
+                
+                # Add successful results
+                for result in chunk_results:
+                    if result is not None:
+                        new_tweets.append(result)
+                
+                if new_tweets:
+                    # Add new tweets to output
+                    output['tweets'].extend(new_tweets)
+                    
+                    # Update metadata
+                    output['metadata']['total_tweets'] = len(output['tweets'])
+                    output['metadata']['last_update'] = datetime.now().isoformat()
+                    
+                    # Save output atomically
+                    try:
+                        temp_file = output_file.with_suffix('.tmp')
+                        with open(temp_file, 'w') as f:
+                            json.dump(output, f, indent=2)
+                        temp_file.replace(output_file)
+                        logger.info(f"Saved {len(new_tweets)} new tweets (total: {len(output['tweets'])})")
+                    except Exception as e:
+                        logger.error(f"Error saving output: {str(e)}")
+                        if temp_file.exists():
+                            temp_file.unlink()
+                else:
+                    logger.info("No new tweets in this chunk met criteria")
+                
+                # Update state.json with progress
+                self._update_processing_state(date_str, chunk_number, total_chunks)
+                
+                # Rate limiting between chunks
+                if i + chunk_size < len(tweets):
+                    await asyncio.sleep(2)
+
+            # Mark as completed if not shutdown
+            if not self.is_shutting_down:
+                self._update_processing_state(date_str, total_chunks, total_chunks, completed=True)
+                logger.info(f"Completed processing {date_str} with {len(output['tweets'])} filtered tweets")
+
+            return output
+
+        except Exception as e:
+            logger.error(f"Error in process_content: {str(e)}")
+            return None
+
+    async def cleanup(self):
+        """Cleanup before shutdown"""
+        self.is_shutting_down = True
+        logger.info("Cleaning up before shutdown...")
+        await asyncio.sleep(0.5)  # Brief pause for cleanup
+
+    def reset_state(self):
+        """Reset processing state to start fresh"""
+        try:
+            if self.state_file.exists():
+                self.state_file.unlink()
+            # Also clear output files
+            self._clear_output_files()
+            logger.info("Reset processing state and cleared outputs")
+        except Exception as e:
+            logger.error(f"Error resetting state: {str(e)}")
+
+    def _validate_state(self, state):
+        """Validate state structure and values"""
+        try:
+            required_fields = ['last_processed_date', 'last_chunk', 'total_chunks', 'completed']
+            if not all(field in state for field in required_fields):
+                logger.error("Invalid state structure")
+                return False
+            
+            # Validate numeric fields
+            if not isinstance(state['last_chunk'], int) or state['last_chunk'] < 0:
+                logger.error("Invalid last_chunk value")
+                return False
+            
+            if not isinstance(state['total_chunks'], int) or state['total_chunks'] < 0:
+                logger.error("Invalid total_chunks value")
+                return False
+            
+            # Validate date format if exists
+            if state['last_processed_date']:
+                try:
+                    datetime.strptime(state['last_processed_date'], '%Y%m%d')
+                except ValueError:
+                    logger.error("Invalid date format in state")
+                    return False
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error validating state: {str(e)}")
+            return False
+
+    def _validate_output_file(self, output_file):
+        """Validate output file structure and content"""
+        try:
+            if not output_file.exists():
+                return False
+            
+            with open(output_file, 'r') as f:
+                data = json.load(f)
+            
+            # Check basic structure
+            if not isinstance(data, dict):
+                logger.error("Output file is not a valid JSON object")
+                return False
+            
+            required_fields = ['tweets', 'metadata']
+            if not all(field in data for field in required_fields):
+                logger.error("Invalid output file structure")
+                return False
+            
+            metadata_fields = ['processed_date', 'total_tweets', 'last_update']
+            if not all(field in data['metadata'] for field in metadata_fields):
+                logger.error("Invalid metadata structure")
+                return False
+            
+            # Validate tweets array
+            if not isinstance(data['tweets'], list):
+                logger.error("Tweets field is not an array")
+                return False
+            
+            # Validate tweet structure if any exist
+            for tweet in data['tweets']:
+                required_tweet_fields = ['tweet', 'author', 'url', 'tweet_id', 'category']
+                if not all(field in tweet for field in required_tweet_fields):
+                    logger.error("Invalid tweet structure")
+                    return False
+            
+            return True
+        except json.JSONDecodeError:
+            logger.error("Invalid JSON in output file")
+            return False
+        except Exception as e:
+            logger.error(f"Error validating output file: {str(e)}")
+            return False
+
+    async def recover_state(self):
+        """Emergency recovery of processing state"""
+        try:
+            logger.info("Starting emergency state recovery")
+            
+            # Check output file
+            output_file = self._get_output_file(None)
+            if self._validate_output_file(output_file):
+                with open(output_file, 'r') as f:
+                    data = json.load(f)
+                    date_str = data['metadata']['processed_date']
+                    total_tweets = data['metadata']['total_tweets']
+                
+                # Load input file to get total chunks
+                input_file = self._get_input_file(date_str)
+                if input_file.exists():
+                    with open(input_file, 'r') as f:
+                        input_data = json.load(f)
+                        total_tweets_input = len(input_data.get('tweets', []))
+                        chunk_size = 5  # Match our chunk size
+                        total_chunks = (total_tweets_input + chunk_size - 1) // chunk_size
+                else:
+                    logger.error("Cannot find input file for recovery")
+                    return False
+                
+                # Reconstruct state
+                state = {
+                    'last_processed_date': date_str,
+                    'last_chunk': 0,  # Reset to beginning to be safe
+                    'total_chunks': total_chunks,
+                    'completed': False,
+                    'columns_state': {}  # Keep for backward compatibility
+                }
+                
+                self._save_state(state)
+                logger.info(f"Recovered state for date {date_str} with {total_tweets} tweets")
+                logger.info(f"Processing will resume from the beginning to ensure completeness")
+                return True
+                
+        except Exception as e:
+            logger.error(f"Error during state recovery: {str(e)}")
+        return False
+
+    def get_processing_progress(self):
+        """Get current processing progress"""
+        try:
+            state = self._load_state()
+            if not self._validate_state(state):
+                return None
+            
+            output_file = self._get_output_file(None)
+            output_valid = self._validate_output_file(output_file)
+            
+            # Get tweet counts if output is valid
+            total_tweets = 0
+            if output_valid:
+                with open(output_file, 'r') as f:
+                    data = json.load(f)
+                    total_tweets = data['metadata']['total_tweets']
+            
+            progress = {
+                'date': state['last_processed_date'],
+                'progress': f"{state['last_chunk']}/{state['total_chunks']} chunks",
+                'percentage': round((state['last_chunk'] / state['total_chunks'] * 100) if state['total_chunks'] > 0 else 0, 2),
+                'completed': state['completed'],
+                'output_valid': output_valid,
+                'total_tweets_processed': total_tweets,
+                'last_update': datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat()
+            }
+            
+            logger.info(f"Progress: {progress['percentage']}% ({progress['progress']}) - {total_tweets} tweets processed")
+            return progress
+            
+        except Exception as e:
+            logger.error(f"Error getting progress: {str(e)}")
+            return None
+
 if __name__ == "__main__":
-    import signal
-    import sys
-    
     # Setup logging
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler()
+        ]
     )
-    
+
     # Load config
     import os
     from dotenv import load_dotenv
     load_dotenv()
-    
+
     config = {
         'deepseek_api_key': os.getenv('DEEPSEEK_API_KEY'),
-        'openai_api_key': os.getenv('OPENAI_API_KEY'),
-        'alpha_threshold': float(os.getenv('ALPHA_THRESHOLD', '0.8')),
-        'risk_threshold': float(os.getenv('RISK_THRESHOLD', '0.4'))
+        'openai_api_key': os.getenv('OPENAI_API_KEY')
     }
+
+    # Setup signal handlers for graceful shutdown
+    import signal
     
-    alpha_filter = AlphaFilter(config)
-    
-    # Setup signal handlers
     def signal_handler(sig, frame):
-        logger.info(f"Received signal {sig}, initiating graceful shutdown...")
+        logger.info("Initiating graceful shutdown...")
         alpha_filter.is_shutting_down = True
     
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-    
+
+    # Get date to process
+    import sys
+    date_to_process = sys.argv[1] if len(sys.argv) > 1 else None
+
+    # Run processor
+    alpha_filter = AlphaFilter(config)
     try:
-        # If date provided, process only that date
-        if len(sys.argv) > 1:
-            date_to_process = sys.argv[1]
+        if date_to_process:
             asyncio.run(alpha_filter.process_content(date_to_process))
         else:
-            # Otherwise process all unprocessed dates
+            # Process all unprocessed dates
             asyncio.run(alpha_filter.process_all_dates())
     except KeyboardInterrupt:
-        logger.info("KeyboardInterrupt received, waiting for cleanup...")
-        # Let the cleanup finish
+        logger.info("Waiting for cleanup...")
         asyncio.run(alpha_filter.cleanup())
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
