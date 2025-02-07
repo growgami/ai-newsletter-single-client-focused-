@@ -290,6 +290,7 @@ class TweetScraper:
             
             # Wait for all tasks to complete
             results = []
+            errors = []  # Track errors
             for column_id, task in tasks:
                 try:
                     tweets = await task
@@ -317,10 +318,14 @@ class TweetScraper:
                             json.dump(tweets_to_save, f, indent=2)
                             
                         results.append((column_id, len(tweets)))
-                        
                 except Exception as e:
-                    logger.error(f"Error processing column {column_id}: {str(e)}")
+                    errors.append(str(e))  # Collect errors
+                    logger.error(f"Error in column {column_id}: {str(e)}")
             
+            # If all columns failed, propagate error
+            if len(errors) == len(self.columns):
+                raise Exception(f"All columns failed: {'; '.join(errors)}")
+                
             # Save latest tweet IDs if any new tweets were found
             if results:
                 self.save_latest_tweets()
@@ -329,4 +334,4 @@ class TweetScraper:
             
         except Exception as e:
             logger.error(f"Error in concurrent scraping: {str(e)}")
-            return [] 
+            raise  # Propagate error up 
