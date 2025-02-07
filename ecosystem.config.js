@@ -6,7 +6,7 @@ module.exports = {
       interpreter: 'python3',
       autorestart: true,
       watch: false,
-      max_memory_restart: '1G',
+      max_memory_restart: '1.5G',
       env: {
         PYTHONUNBUFFERED: '1'
       },
@@ -24,7 +24,7 @@ module.exports = {
       interpreter: 'python3',
       autorestart: true,
       watch: false,
-      max_memory_restart: '1G',
+      max_memory_restart: '500M',
       env: {
         PYTHONUNBUFFERED: '1'
       },

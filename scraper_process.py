@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from browser_automation import BrowserAutomation
 from tweet_scraper import TweetScraper
 from error_handler import with_retry, RetryConfig, BrowserError
+import psutil
 
 # Setup logging
 logging.basicConfig(
@@ -53,6 +54,9 @@ class TweetScraperProcess:
         
         # Ensure data directories exist
         self.setup_directories()
+        
+        self.process = psutil.Process()
+        self.max_memory_mb = 1024  # 1GB max
         
     def setup_directories(self):
         """Create necessary directories if they don't exist"""
@@ -112,10 +116,7 @@ class TweetScraperProcess:
     async def monitor_tweets(self):
         """Check all columns concurrently for updates"""
         try:
-            # Scrape all columns concurrently
             results = await self.scraper.scrape_all_columns(is_monitoring=True)
-            
-            # Log results only if new tweets found
             if results:
                 total_new_tweets = sum(count for _, count in results)
                 if total_new_tweets > 0:
@@ -126,10 +127,29 @@ class TweetScraperProcess:
                     logger.info(f"Total new tweets found: {total_new_tweets}")
                 return results
             return None
-            
         except Exception as e:
             logger.error(f"Error monitoring tweets: {str(e)}")
-            return None
+            raise  # Propagate error to trigger restart
+
+    async def check_memory(self):
+        """Check memory usage including browser subprocess"""
+        try:
+            # Get memory for main process and children (browser)
+            total_memory = 0
+            for proc in [self.process] + self.process.children(recursive=True):
+                try:
+                    total_memory += proc.memory_info().rss / (1024 * 1024)  # Convert to MB
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+
+            if total_memory > self.max_memory_mb:
+                logger.warning(f"Memory usage too high ({total_memory:.1f}MB), restarting browser")
+                await self.initialize_browser()
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error checking memory: {str(e)}")
+            return False
 
     async def continuous_scraping(self):
         """Continuously monitor for new tweets"""
@@ -138,16 +158,14 @@ class TweetScraperProcess:
         
         while self.is_running:
             try:
+                # Check memory before scraping
+                await self.check_memory()
+                
                 results = await self.monitor_tweets()
                 consecutive_errors = 0
             except Exception as e:
                 consecutive_errors += 1
                 logger.error(f"Error in scraping loop: {str(e)}")
-                
-                # Add exponential backoff
-                backoff = min(60, 2 ** consecutive_errors)  # Max 60 seconds
-                logger.info(f"Backing off for {backoff} seconds")
-                await asyncio.sleep(backoff)
                 
                 if consecutive_errors >= max_consecutive_errors:
                     logger.critical("Too many consecutive errors, attempting browser reinitialization")
@@ -156,7 +174,6 @@ class TweetScraperProcess:
                         consecutive_errors = 0
                     except Exception as reinit_error:
                         logger.error(f"Failed to reinitialize browser: {str(reinit_error)}")
-                        await asyncio.sleep(5)  # Brief delay after failed reinit
 
     async def shutdown(self):
         """Cleanup and shutdown"""
