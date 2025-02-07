@@ -34,28 +34,17 @@ class BrowserAutomation:
         try:
             playwright = await async_playwright().start()
             self.browser = await playwright.chromium.launch(
-                headless=True,  # For testing
-                args=['--start-maximized']  # Start maximized
+                headless=True,
+                args=['--start-maximized']
             )
             
-            # Try to load existing session with larger viewport
-            if self.storage_state_path.exists():
-                self.context = await self.browser.new_context(
-                    storage_state=str(self.storage_state_path),
-                    viewport={'width': 1920, 'height': 1080}  # Full HD size
-                )
-                logger.info("Loaded existing session")
-            else:
-                self.context = await self.browser.new_context(
-                    viewport={'width': 1920, 'height': 1080}  # Full HD size
-                )
+            # Create context with stored session
+            self.context = await self.browser.new_context(
+                viewport={'width': 1920, 'height': 1080},
+                storage_state=str(self.storage_state_path) if self.storage_state_path.exists() else None
+            )
             
             self.page = await self.context.new_page()
-            
-            # Set window state to maximized
-            await self.page.evaluate("window.moveTo(0, 0)")
-            await self.page.evaluate("window.resizeTo(screen.width, screen.height)")
-            
             logger.info("Browser initialized successfully")
             return True
             
