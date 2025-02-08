@@ -16,6 +16,7 @@ import sys
 from error_handler import RetryConfig, with_retry, TelegramError, log_error, DataProcessingError
 from category_mapping import TELEGRAM_CHANNEL_MAP, EMOJI_MAP, CATEGORY
 import time
+import zoneinfo
 
 # Setup logging
 logging.basicConfig(
@@ -284,17 +285,20 @@ class TelegramSender:
             log_error(logger, e, f"Failed to format {category} summary")
             return ""
 
-    def _get_input_file(self):
-        """Get input file path - always polkadot_summary.json"""
-        return Path('data/filtered/news_filtered/polkadot_summary.json')
+    def _get_input_file(self, date_str=None):
+        """Get input file path for specific date"""
+        if not date_str:
+            current_time = datetime.now(zoneinfo.ZoneInfo("UTC"))
+            date_str = current_time.strftime('%Y%m%d')
+        return self.input_dir / f'{CATEGORY.lower()}_summary_{date_str}.json'
 
-    async def process_news_summary(self):
+    async def process_news_summary(self, date_str=None):
         """Process news summary file and send to all configured channels"""
         try:
             # Get and validate input file
-            input_file = self._get_input_file()
+            input_file = self._get_input_file(date_str)
             if not await self._validate_summary_file(input_file):
-                logger.error("Summary file validation failed")
+                logger.error(f"Summary file validation failed: {input_file}")
                 return False
             
             # Load summary data
@@ -384,7 +388,8 @@ if __name__ == "__main__":
         
         # Process all summary files
         summary_dir = Path('data/filtered/news_filtered')
-        summary_files = list(summary_dir.glob('*_summary.json'))
+        # Look for date-specific summary files
+        summary_files = list(summary_dir.glob(f'{CATEGORY.lower()}_summary_*.json'))
         
         if not summary_files:
             logger.warning("No summary files found to process")
@@ -395,8 +400,10 @@ if __name__ == "__main__":
         async def process_all_files():
             for summary_file in summary_files:
                 try:
-                    logger.info(f"Processing {summary_file.name}")
-                    await sender.process_news_summary()
+                    # Extract date from filename
+                    date_str = summary_file.stem.split('_')[-1]
+                    logger.info(f"Processing summary for date: {date_str}")
+                    await sender.process_news_summary(date_str)
                     # Brief pause between messages
                     await asyncio.sleep(2)
                 except Exception as e:
