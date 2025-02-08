@@ -1,37 +1,33 @@
 module.exports = {
   apps: [
     {
-      name: 'tweet-scraper',
-      script: './scraper_process.py',
+      name: 'tweet_collection',
+      script: 'tweet_collection.py',
       interpreter: 'python3',
+      version: 'v2.0',
       autorestart: true,
       watch: false,
-      max_memory_restart: '1.5G',
+      max_memory_restart: '1G',
+      error_file: './logs/tweet_collection_error.log',
+      out_file: './logs/tweet_collection_out.log',
       env: {
         PYTHONUNBUFFERED: '1'
-      },
-      error_file: './logs/tweet_scraper_error.log',
-      out_file: './logs/tweet_scraper_out.log',
-      time: true,
-      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
-      kill_timeout: 5000,
-      min_uptime: '10s',
-      restart_delay: 5000
+      }
+
     },
     {
-      name: 'newsletter',
-      script: './newsletter_process.py',
+      name: 'tweet_summary',
+      script: 'tweet_summary.py',
       interpreter: 'python3',
+      version: 'v2.0',
       autorestart: true,
       watch: false,
-      max_memory_restart: '500M',
+      max_memory_restart: '1G',
+      error_file: './logs/tweet_summary_error.log',
+      out_file: './logs/tweet_summary_out.log',
       env: {
         PYTHONUNBUFFERED: '1'
-      },
-      error_file: './logs/newsletter_error.log',
-      out_file: './logs/newsletter_out.log',
-      time: true,
-      log_date_format: 'YYYY-MM-DD HH:mm:ss Z'
+      }
     }
   ]
-}; 
+};
