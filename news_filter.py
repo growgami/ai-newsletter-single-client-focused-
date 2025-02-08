@@ -3,7 +3,7 @@
 import logging
 import json
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 import asyncio
 from openai import AsyncOpenAI
 from collections import defaultdict
@@ -62,7 +62,9 @@ class NewsFilter:
 
     def _get_output_file(self):
         """Get output file path"""
-        return self.output_dir / f'{CATEGORY.lower()}_summary.json'
+        current_time = datetime.now(timezone.utc)
+        date_str = current_time.strftime('%Y%m%d')
+        return self.output_dir / f'{CATEGORY.lower()}_summary_{date_str}.json'
 
     async def _try_deepseek_request(self, prompt):
         """Attempt to get a response from Deepseek"""
