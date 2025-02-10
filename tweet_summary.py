@@ -210,11 +210,12 @@ class TweetSummary:
         while self.is_running:
             try:
                 if not self.is_processing:
+                    logger.info("🔍 Checking filter outputs...")
                     # Check alpha filter output only if alpha filter isn't running
                     if not self.alpha_filter_running:
                         alpha_file = self.data_dir / 'filtered' / 'alpha_filtered' / 'combined_filtered.json'
                         alpha_count = self._count_tweets_in_file(alpha_file)
-                        logger.debug(f"📊 Alpha filter tweet count: {alpha_count}")
+                        logger.info(f"📊 Alpha filter tweet count: {alpha_count}")
                         
                         if alpha_count >= self.thresholds['content_filter']:
                             logger.info(f"🎯 Alpha filter threshold met ({alpha_count} tweets), initiating content filter")
@@ -235,7 +236,7 @@ class TweetSummary:
                     # Check content filter output
                     content_file = self.data_dir / 'filtered' / 'content_filtered' / 'combined_filtered.json'
                     content_count = self._count_tweets_in_file(content_file)
-                    logger.debug(f"📊 Content filter tweet count: {content_count}")
+                    logger.info(f"📊 Content filter tweet count: {content_count}")
                     
                     if content_count >= self.thresholds['news_filter']:
                         logger.info(f"🎯 Content filter threshold met ({content_count} tweets), initiating news filter")
@@ -259,6 +260,7 @@ class TweetSummary:
                         
                         self.is_processing = False
 
+                logger.info("💤 Monitoring cycle complete, waiting for next check...")
                 await asyncio.sleep(self.check_interval)
                 
             except Exception as e:
