@@ -57,7 +57,7 @@ class AlphaFilter:
         self.openai_client = AsyncOpenAI(api_key=self.openai_api_key)
         
         # Alpha filtering thresholds
-        self.alpha_threshold = config.get('alpha_threshold', 0.8)
+        self.alpha_threshold = config.get('alpha_threshold', 0.6)
         
         self.circuit_breaker = CircuitBreaker()
         
@@ -188,7 +188,7 @@ class AlphaFilter:
                 self.circuit_breaker.record_failure()
                 logger.error(f"Unexpected error filtering tweet {tweet.get('id', 'unknown')}: {str(e)}")
                 return None
-
+            
     def _prepare_filtering_prompt(self, tweet, category):
         """Prepare the prompt for filtering content"""
         try:
@@ -228,7 +228,7 @@ class AlphaFilter:
                - Consider timing and exclusivity of information
     
             3. Impact (0-1): What measurable effects will this have?
-               - Must score 0.7+ to be included
+               - Must score 0.6+ to be included
                - Focus on quantifiable metrics (TVL, price, volume)
                - Higher score for immediate impact opportunities
     
@@ -252,7 +252,7 @@ class AlphaFilter:
         except Exception as e:
             logger.error(f"Error preparing prompt: {str(e)}")
             return None
-
+            
     def _validate_filter_response(self, response_text: str) -> dict:
         """Validate the filter response"""
         try:
@@ -275,7 +275,7 @@ class AlphaFilter:
         except Exception as e:
             logger.warning(f"Invalid response format: {str(e)}")
             raise
-
+            
     async def _try_deepseek_request(self, prompt):
         """Attempt to get a response from Deepseek"""
         try:
@@ -284,7 +284,7 @@ class AlphaFilter:
                 self.deepseek_client.chat.completions.create(
                     model="deepseek-chat",
                     messages=[{"role": "user", "content": prompt}],
-                    temperature=0.1,
+                    temperature=0.5,
                     response_format={"type": "json_object"},
                     max_tokens=4096
                 ),
@@ -311,7 +311,7 @@ class AlphaFilter:
                 self.openai_client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[{"role": "user", "content": prompt}],
-                    temperature=0.1,
+                    temperature=0.5,
                     response_format={"type": "json_object"},
                     max_tokens=4096
                 ),
@@ -373,7 +373,7 @@ class AlphaFilter:
                     processed_dates.add(state.get('last_processed_date'))
             except Exception as e:
                 logger.error(f"Error loading state: {str(e)}")
-
+        
         # Find all date folders in processed directory
         raw_dates = set()
         for date_dir in self.processed_dir.glob('*'):
@@ -713,17 +713,17 @@ if __name__ == "__main__":
             logging.StreamHandler()
         ]
     )
-
+    
     # Load config
     import os
     from dotenv import load_dotenv
     load_dotenv()
-
+    
     config = {
         'deepseek_api_key': os.getenv('DEEPSEEK_API_KEY'),
         'openai_api_key': os.getenv('OPENAI_API_KEY')
     }
-
+    
     # Setup signal handlers for graceful shutdown
     import signal
     
@@ -733,7 +733,7 @@ if __name__ == "__main__":
     
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-
+    
     # Get date to process
     import sys
     date_to_process = sys.argv[1] if len(sys.argv) > 1 else None

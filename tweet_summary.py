@@ -5,13 +5,15 @@ import asyncio
 import signal
 import sys
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import json
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
+import zoneinfo
 
+from data_processor import DataProcessor
 from alpha_filter import AlphaFilter
 from content_filter import ContentFilter
 from news_filter import NewsFilter
@@ -23,10 +25,20 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - [%(levelname)s] - %(message)s',
     handlers=[
         logging.FileHandler('logs/tweet_summary.log'),
-        logging.StreamHandler()
+        logging.StreamHandler(sys.stdout)  # Explicitly use sys.stdout
     ]
 )
+
+# Force immediate flushing of stdout
+sys.stdout.reconfigure(line_buffering=True)  # For Python 3.7+
+
 logger = logging.getLogger(__name__)
+
+# Ensure child loggers also log to stdout
+for name in ['data_processor', 'alpha_filter', 'content_filter', 'news_filter', 'telegram_sender']:
+    child_logger = logging.getLogger(name)
+    child_logger.addHandler(logging.StreamHandler(sys.stdout))
+    child_logger.propagate = True  # Ensure logs propagate to parent
 
 class TweetSummary:
     def __init__(self):
@@ -53,6 +65,8 @@ class TweetSummary:
         # Initialize components
         logger.info("🔄 Initializing pipeline components...")
         config = self._get_config()
+        self.data_processor = DataProcessor()
+        logger.info("✓ Data Processor initialized")
         self.alpha_filter = AlphaFilter(config)
         logger.info("✓ Alpha Filter initialized")
         self.content_filter = ContentFilter(config)
@@ -69,8 +83,8 @@ class TweetSummary:
         
         # Monitoring thresholds
         self.thresholds = {
-            'content_filter': 20,  # Run content filter if alpha filter has > 20 tweets
-            'news_filter': 10      # Run news filter if content filter has > 10 tweets
+            'content_filter': 10,
+            'news_filter': 15
         }
         logger.info(f"✓ Thresholds configured: Content Filter: {self.thresholds['content_filter']}, News Filter: {self.thresholds['news_filter']}")
         
@@ -121,27 +135,52 @@ class TweetSummary:
             'risk_threshold': float(os.getenv('RISK_THRESHOLD', '0.4'))
         }
 
-    async def midnight_processing(self):
-        """Run alpha filter at midnight UTC"""
+    async def scheduled_processing(self):
+        """Run processing every 6 hours"""
         if self.is_processing:
-            logger.warning("⚠️ Previous processing still running, skipping midnight processing")
+            logger.warning("⚠️ Previous processing still running, skipping scheduled processing")
             return
 
         try:
             self.is_processing = True
             self.alpha_filter_running = True
-            logger.info("🌙 Starting midnight alpha filter processing")
+            current_time = datetime.now(zoneinfo.ZoneInfo("UTC"))
+            logger.info(f"🌙 Starting scheduled processing at {current_time}")
             
-            # Run alpha filter
-            await self.alpha_filter.process_all_dates()
-            logger.info("✅ Alpha filtering complete")
+            # Get yesterday's date
+            yesterday = current_time - timedelta(days=1)
+            date_str = yesterday.strftime('%Y%m%d')
+            logger.info(f"Processing data for date: {date_str}")
+            
+            # Reset alpha filter state before processing
+            logger.info("🔄 Resetting alpha filter state")
+            self.alpha_filter.reset_state()
+            
+            # Step 1: Run data processor first
+            logger.info("📥 Starting data processing")
+            processed_count = await self.data_processor.process_tweets(date_str)
+            if processed_count > 0:
+                logger.info(f"✅ Data processing complete - processed {processed_count} tweets")
+                
+                # Step 2: Run alpha filter on the same date's data
+                logger.info(f"🔄 Starting alpha filtering for date: {date_str}")
+                await self.alpha_filter.process_content(date_str)
+                logger.info("✅ Alpha filtering complete")
+                
+                # Clear processed file after successful run
+                input_file = self.data_processor._get_input_file(date_str)
+                if input_file and input_file.exists():
+                    input_file.unlink()
+                    logger.info(f"Cleared processed file for date: {date_str}")
+            else:
+                logger.info("ℹ️ No new tweets to process")
             
         except Exception as e:
-            logger.error(f"❌ Error in midnight processing: {str(e)}")
+            logger.error(f"❌ Error in scheduled processing: {str(e)}")
         finally:
             self.is_processing = False
             self.alpha_filter_running = False
-            logger.info("📝 Midnight processing cycle completed")
+            logger.info("📝 Processing cycle completed")
 
     def _count_tweets_in_file(self, file_path: Path) -> int:
         """Count tweets in a file"""
@@ -186,6 +225,7 @@ class TweetSummary:
                             
                             if content_result:
                                 await self._clear_input_file(alpha_file)
+                                self.alpha_filter.reset_state()  # Reset alpha filter state
                                 logger.info("✅ Content filter completed successfully")
                             else:
                                 logger.error("❌ Content filter failed")
@@ -210,6 +250,7 @@ class TweetSummary:
                             
                             if telegram_result:
                                 await self._clear_input_file(content_file)
+                                self.content_filter.reset_state()  # Reset content filter state
                                 logger.info("✅ News processing and Telegram sending completed successfully")
                             else:
                                 logger.error("❌ Telegram sending failed")
@@ -229,13 +270,13 @@ class TweetSummary:
         """Main process runner"""
         logger.info("🚀 Starting Tweet Summary main process")
         try:
-            # Setup midnight cron job
+            # Setup scheduled processing job (every 6 hours)
             self.scheduler.add_job(
-                self.midnight_processing,
-                CronTrigger(hour=0, minute=0, timezone=timezone.utc),
-                id='midnight_alpha_filter'
+                self.scheduled_processing,
+                CronTrigger(hour='0,6,12,18', minute=0, timezone=timezone.utc),
+                id='scheduled_processing'
             )
-            logger.info("✓ Midnight UTC cron job scheduled")
+            logger.info("✓ Scheduled processing job set for 00:00, 06:00, 12:00, 18:00 UTC")
             
             # Start the scheduler
             self.scheduler.start()

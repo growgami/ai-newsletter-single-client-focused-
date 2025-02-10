@@ -10,13 +10,12 @@ import os
 from pathlib import Path
 import json
 from datetime import datetime
-from dotenv import load_dotenv
 import re
 import sys
 from error_handler import RetryConfig, with_retry, TelegramError, log_error, DataProcessingError
-from category_mapping import TELEGRAM_CHANNEL_MAP, EMOJI_MAP, CATEGORY
 import time
 import zoneinfo
+from dotenv import load_dotenv
 
 # Setup logging
 logging.basicConfig(
@@ -28,13 +27,32 @@ logger = logging.getLogger(__name__)
 # Reduce httpx logging
 logging.getLogger('httpx').setLevel(logging.WARNING)
 
+# Load environment variables before importing category_mapping
+load_dotenv()
+
+# Import after loading environment variables
+from category_mapping import TELEGRAM_CHANNELS, EMOJI_MAP, CATEGORY
+
 class TelegramSender:
     def __init__(self, bot_token):
         if not bot_token:
             raise ValueError("Bot token is required")
+            
         self.bot = Bot(token=bot_token)
         self.used_emojis = set()  # Track used emojis per summary
         
+        # Initialize data directories
+        self.data_dir = Path('data')
+        self.input_dir = self.data_dir / 'filtered' / 'news_filtered'  # Input from news_filter
+        
+        # Create directories if they don't exist
+        self.input_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Debug: Print environment variables and channel IDs
+        logger.error(f"DEBUG - Environment Variables:")
+        for name, channel_id in TELEGRAM_CHANNELS.items():
+            logger.error(f"Channel {name}: ID = '{channel_id}' (type: {type(channel_id)})")
+
     def _reset_used_emojis(self):
         """Reset the used emojis tracking set"""
         self.used_emojis.clear()
@@ -152,7 +170,7 @@ class TelegramSender:
     async def process_category(self, category: str, content: dict):
         """Process and send a category summary to Telegram"""
         try:
-            channel_id = TELEGRAM_CHANNEL_MAP[category]
+            channel_id = TELEGRAM_CHANNELS[category]
             if not await self._validate_channel(channel_id):
                 logger.error(f"Skipping invalid channel: {channel_id}")
                 return False
@@ -218,86 +236,113 @@ class TelegramSender:
             # Reset used emojis for new summary
             self._reset_used_emojis()
             
-            # Case-insensitive check for category
-            category_key = next(
-                (k for k in summary.keys() if k.upper() == category),
-                None
-            )
+            # Find the actual category key that matches case-insensitively
+            category_key = None
+            for key in summary.keys():
+                if key.lower() == category.lower():
+                    category_key = key
+                    break
+                    
+            logger.error(f"DEBUG - category_key: {category_key}, summary keys: {list(summary.keys())}")  # Temporary debug
             
             if not summary or not category_key:
                 logger.error(f"Invalid summary format for {category}")
                 return ""
             
             category_data = summary[category_key]
+            logger.error(f"DEBUG - subcategories: {list(category_data.keys())}")  # Temporary debug
+            
             if not isinstance(category_data, dict):
                 logger.error(f"Invalid category data format for {category}")
                 return ""
             
-            # Build message with header
-            lines = [f"<u><b><i>{category} Rollup</i></b></u> ~\n"]
+            # Build message with header using the original category key to preserve case
+            lines = [f"<u><b><i>{category_key} Rollup</i></b></u> ~\n"]
             
             # Add each subcategory and its tweets
             for subcategory, tweets in category_data.items():
-                # Get unique emoji for subcategory
-                emoji = self._get_emoji_for_subcategory(subcategory)
-                
-                # Add subcategory header with emoji
-                subcategory_text = f"<u><b>{subcategory}</b></u>"
-                if emoji:
-                    subcategory_text += f" {emoji}"
-                lines.append(subcategory_text)
-                
-                # Group tweets by attribution
-                attribution_tweets = {}
-                for tweet in tweets:
-                    attribution = tweet.get('attribution', '')
-                    content = tweet.get('content', '')
-                    url = tweet.get('url', '')
+                try:
+                    # Add newline before each subcategory (except the first one)
+                    if len(lines) > 1:  # If not first subcategory
+                        lines.append("")  # Add newline before subcategory
                     
-                    if attribution and content and url:
-                        if attribution not in attribution_tweets:
-                            attribution_tweets[attribution] = []
-                        attribution_tweets[attribution].append((content, url))
-                
-                # Format consolidated tweets for each attribution
-                for attribution, tweet_list in attribution_tweets.items():
-                    if len(tweet_list) == 1:
-                        # Single tweet format
-                        content, url = tweet_list[0]
-                        lines.append(f"- <b>{attribution}</b> <a href='{url}'>{html.escape(content)}</a>")
-                    else:
-                        # Multiple tweets consolidated format
-                        consolidated = []
-                        for content, url in tweet_list:
-                            # Create short summary (first part of content up to a sensible break)
-                            summary = content.split('.')[0].split(';')[0].strip()
-                            if len(summary) > 50:  # Truncate if too long
-                                summary = summary[:47] + "..."
-                            consolidated.append(f"<a href='{url}'>{html.escape(summary)}</a>")
+                    # Get unique emoji for subcategory
+                    emoji = self._get_emoji_for_subcategory(subcategory)
+                    logger.error(f"DEBUG - Processing {subcategory} with {len(tweets)} tweets")  # Temporary debug
+                    
+                    # Add subcategory header with emoji
+                    subcategory_text = f"<u><b>{subcategory}</b></u>"
+                    if emoji:
+                        subcategory_text += f" {emoji}"
+                    lines.append(subcategory_text)
+                    
+                    # Group tweets by attribution
+                    attribution_tweets = {}
+                    for tweet in tweets:
+                        attribution = tweet.get('attribution', '')
+                        content = tweet.get('content', '')
+                        url = tweet.get('url', '')
                         
-                        lines.append(f"- <b>{attribution}</b> {' • '.join(consolidated)}")
-                
-                lines.append("")  # Empty line between subcategories
+                        if attribution and content and url:
+                            if attribution not in attribution_tweets:
+                                attribution_tweets[attribution] = []
+                            attribution_tweets[attribution].append((content, url))
+                    
+                    # Add tweets for each attribution
+                    for attribution, tweet_list in attribution_tweets.items():
+                        for content, url in tweet_list:
+                            # Format as: "- <b>Attribution</b> <a href='url'>content</a>"
+                            formatted_line = f"- <b>{html.escape(attribution)}</b> <a href='{url}'>{html.escape(content)}</a>"
+                            lines.append(formatted_line)
+                    
+                except Exception as e:
+                    logger.error(f"DEBUG - Error in subcategory {subcategory}: {str(e)}")  # Temporary debug
+                    continue
             
-            return "\n".join(lines)
+            final_text = "\n".join(lines)
+            logger.error(f"DEBUG - Final text length: {len(final_text)}")  # Temporary debug
+            return final_text
             
         except Exception as e:
+            logger.error(f"DEBUG - Top level error: {str(e)}")  # Temporary debug
             log_error(logger, e, f"Failed to format {category} summary")
             return ""
+
+    def _get_latest_summary_file(self) -> Path:
+        """Get the most recent summary file"""
+        try:
+            pattern = f'{CATEGORY.lower()}_summary_*.json'
+            files = list(self.input_dir.glob(pattern))
+            
+            if not files:
+                logger.error("No summary files found")
+                return None
+                
+            # Find the latest file by date in filename
+            latest_file = max(files, key=lambda f: f.stem.split('_')[-1])
+            logger.info(f"Latest summary file: {latest_file.name}")
+            return latest_file
+            
+        except Exception as e:
+            logger.error(f"Error finding latest summary file: {str(e)}")
+            return None
 
     def _get_input_file(self, date_str=None):
         """Get input file path for specific date"""
         if not date_str:
-            current_time = datetime.now(zoneinfo.ZoneInfo("UTC"))
-            date_str = current_time.strftime('%Y%m%d')
-        return self.input_dir / f'{CATEGORY.lower()}_summary_{date_str}.json'
+            # Find latest summary file
+            return self._get_latest_summary_file()
+            
+        # If date provided, look for the category's summary for that date
+        file_path = self.input_dir / f'{CATEGORY.lower()}_summary_{date_str}.json'
+        return file_path if file_path.exists() else None
 
     async def process_news_summary(self, date_str=None):
         """Process news summary file and send to all configured channels"""
         try:
             # Get and validate input file
             input_file = self._get_input_file(date_str)
-            if not await self._validate_summary_file(input_file):
+            if not input_file or not await self._validate_summary_file(input_file):
                 logger.error(f"Summary file validation failed: {input_file}")
                 return False
             
@@ -307,29 +352,39 @@ class TelegramSender:
                 logger.error("Failed to load summary data")
                 return False
             
-            # Format summary once
-            formatted_text = await self.format_category_summary(CATEGORY, data)
+            # Get the category from the data
+            if not data or len(data.keys()) != 1:
+                logger.error(f"Invalid data structure. Expected one category, got: {list(data.keys())}")
+                return False
+            
+            category = list(data.keys())[0]  # Get the single category
+            logger.info(f"Processing summary for category: {category}")
+            
+            # Format message once using the original category
+            formatted_text = await self.format_category_summary(category, data)
             if not formatted_text:
-                logger.error("Failed to format summary")
+                logger.error(f"Failed to format summary for {category}")
                 return False
             
             success = True
-            # Send to each configured channel
-            for category, channel_id in TELEGRAM_CHANNEL_MAP.items():
+            # Send to each configured channel that has a channel ID
+            for channel_name, channel_id in TELEGRAM_CHANNELS.items():
                 if not channel_id:
-                    logger.warning(f"No channel ID configured for {category}, skipping...")
+                    logger.warning(f"No channel ID configured for {channel_name}, skipping...")
                     continue
                 
-                # Validate channel ID format
-                if not channel_id.strip('-').isdigit():
-                    logger.warning(f"Invalid channel ID format for {category}, skipping...")
+                logger.info(f"Sending to channel {channel_name} with ID: {channel_id}")
+                
+                # Validate channel ID format - allow negative IDs for channels
+                if not str(channel_id).replace('-', '').isdigit():
+                    logger.warning(f"Invalid channel ID format for {channel_name}: {channel_id}, skipping...")
                     continue
                 
-                # Send message
+                # Send the formatted message
                 if await self.send_message(channel_id, formatted_text):
-                    logger.info(f"✅ Successfully sent summary to {category} channel")
+                    logger.info(f"✅ Successfully sent summary to {channel_name} channel")
                 else:
-                    logger.error(f"Failed to send summary to {category} channel")
+                    logger.error(f"Failed to send summary to {channel_name} channel")
                     success = False
                 
                 # Brief pause between sends
@@ -339,6 +394,55 @@ class TelegramSender:
             
         except Exception as e:
             log_error(logger, e, "Failed to process news summary")
+            return False
+
+    async def _validate_summary_file(self, file_path: Path) -> bool:
+        """Validate summary file exists and has correct format"""
+        try:
+            if not file_path.exists():
+                logger.error(f"Summary file not found: {file_path}")
+                return False
+                
+            with open(file_path, 'r') as f:
+                data = json.load(f)
+                
+            # Validate basic structure
+            if not isinstance(data, dict):
+                logger.error("Summary file is not a valid JSON object")
+                return False
+                
+            # Validate that the category exists
+            if CATEGORY not in data:
+                logger.error(f"Category {CATEGORY} not found in summary")
+                return False
+                
+            # Validate structure for the category
+            category_data = data[CATEGORY]
+            if not isinstance(category_data, dict):
+                logger.error(f"Invalid category data structure for {CATEGORY}")
+                return False
+                
+            # Validate subcategories
+            for subcategory, tweets in category_data.items():
+                if not isinstance(tweets, list):
+                    logger.error(f"Invalid tweets format in {subcategory}")
+                    return False
+                    
+                # Validate tweet structure
+                for tweet in tweets:
+                    required_fields = ['attribution', 'content', 'url']
+                    if not all(field in tweet for field in required_fields):
+                        logger.error(f"Missing required fields in tweet under {subcategory}")
+                        return False
+            
+            logger.info(f"✅ Summary file validation successful: {file_path.name}")
+            return True
+            
+        except json.JSONDecodeError:
+            logger.error(f"Invalid JSON in summary file: {file_path}")
+            return False
+        except Exception as e:
+            logger.error(f"Error validating summary file: {str(e)}")
             return False
 
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
@@ -386,32 +490,19 @@ if __name__ == "__main__":
             
         sender = TelegramSender(bot_token)
         
-        # Process all summary files
-        summary_dir = Path('data/filtered/news_filtered')
-        # Look for date-specific summary files
-        summary_files = list(summary_dir.glob(f'{CATEGORY.lower()}_summary_*.json'))
+        # Get date from command line argument if provided
+        date_str = sys.argv[1] if len(sys.argv) > 1 else None
         
-        if not summary_files:
-            logger.warning("No summary files found to process")
-            sys.exit(0)
-            
-        logger.info(f"Found {len(summary_files)} summary files to process")
-        
-        async def process_all_files():
-            for summary_file in summary_files:
-                try:
-                    # Extract date from filename
-                    date_str = summary_file.stem.split('_')[-1]
-                    logger.info(f"Processing summary for date: {date_str}")
-                    await sender.process_news_summary(date_str)
-                    # Brief pause between messages
-                    await asyncio.sleep(2)
-                except Exception as e:
-                    logger.error(f"Failed to process {summary_file.name}: {str(e)}")
-                    continue
+        async def process_summary():
+            if date_str:
+                logger.info(f"Processing summary for specific date: {date_str}")
+                await sender.process_news_summary(date_str)
+            else:
+                logger.info("Processing latest summary file")
+                await sender.process_news_summary()
         
         # Run everything in a single event loop
-        asyncio.run(process_all_files())
+        asyncio.run(process_summary())
                 
     except Exception as e:
         logger.error(f"Script error: {str(e)}")

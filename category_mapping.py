@@ -2,52 +2,50 @@
 
 from typing import Dict, List
 import os
+from dotenv import load_dotenv
 
 # Primary category constant
 # Used in:
 # - news_filter.py: For categorizing tweets
 # - content_filter.py: For filtering relevant content
 # - alpha_filter.py: For initial filtering
-# - telegram_sender.py: For message routing
+# - telegram_sender.py: For message formatting
 CATEGORY: str = 'Polkadot'
 
-# Mapping of category to Telegram channel IDs
+# Load environment variables first
+load_dotenv()
+
+# Channel ID mapping for Telegram
 # Used in:
-# - telegram_sender.py: For determining which channel to send messages to
-# - newsletter_process.py: For validating channel configuration
-TELEGRAM_CHANNEL_MAP: Dict[str, str] = {
-    'Growgami': os.getenv('TELEGRAM_GROWGAMI_CHANNEL_ID', ''),  # General updates channel
-    'Polkadot': os.getenv('TELEGRAM_POLKADOT_CHANNEL_ID', '')   # Category-specific channel
+# - telegram_sender.py: For sending messages to configured channels
+TELEGRAM_CHANNELS: Dict[str, str] = {
+    'GROWGAMI': os.getenv('TELEGRAM_GROWGAMI_CHANNEL_ID', ''),
+    'POLKADOT': os.getenv('TELEGRAM_POLKADOT_CHANNEL_ID', '')
 }
 
 # Category-specific focus areas for news filtering
 # Used in:
 # - news_filter.py: For determining tweet relevance
-# - content_filter.py: For content summarization
-# - alpha_filter.py: For initial filtering criteria
 CATEGORY_FOCUS: Dict[str, List[str]] = {
     CATEGORY: [
-        'Layer-0 blockchain platform for cross-chain interoperability',
-        'Built on Substrate framework with custom consensus mechanism',
-        'Features parachain and parathread architecture',
-        'Uses nominated proof-of-stake (NPoS) consensus',
-        'Specialized for cross-chain communication and scalability',
-        'Native DOT token for governance and parachain auctions',
-        'Ecosystem of parachains and cross-chain applications',
-        'Focus on interoperability and shared security model'
+        'Parachain slot auctions and crowdloans - DOT token utility and staking',
+        'Cross-chain messaging (XCM) updates and integrations between parachains',
+        'Network upgrades affecting performance, security, or scalability',
+        'Ecosystem growth metrics (TVL, active addresses, transaction volume)',
+        'Major parachain launches, upgrades, or significant milestones',
+        'Governance proposals and treasury funding decisions',
+        'Strategic partnerships and enterprise adoption',
+        'DeFi protocols and cross-chain liquidity developments',
+        'Technical innovations in consensus, runtime, or core infrastructure',
+        'Market dynamics and token economics (DOT, KSM, parachain tokens)'
     ]
 }
 
 # Keywords for category identification
 # Used in:
-# - alpha_filter.py: For initial tweet filtering
-# - content_filter.py: For relevance scoring
-# - news_filter.py: For subcategory assignment
+# - kol_pump.py: For tweet categorization
 CATEGORY_KEYWORDS: List[str] = [
-    'polkadot', 'dot', 'kusama', 'ksm', 'parachain',
-    'substrate', 'web3 foundation', 'gavin wood',
-    'parathread', 'xcm', 'cross-chain', 'relay chain',
-    'astar', 'acala', 'moonbeam', 'interlay'
+    'polkadot'
 ]
 
 # Emoji mappings for subcategories
@@ -256,16 +254,3 @@ EMOJI_MAP: Dict[str, str] = {
     'Misc': '📌',
     'General': '📌'
 }
-
-# Used in:
-# - newsletter_process.py: For startup validation
-# - telegram_sender.py: For channel validation
-def validate_telegram_config():
-    """Validate Telegram channel configuration
-    Raises ValueError if any channel ID is missing"""
-    missing = []
-    for category, channel_id in TELEGRAM_CHANNEL_MAP.items():
-        if not channel_id:
-            missing.append(category)
-    if missing:
-        raise ValueError(f"Missing Telegram channel IDs for: {', '.join(missing)}") 

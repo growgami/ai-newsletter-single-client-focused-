@@ -11,9 +11,9 @@ module.exports = {
       error_file: './logs/tweet_collection_error.log',
       out_file: './logs/tweet_collection_out.log',
       env: {
-        PYTHONUNBUFFERED: '1'
+        PYTHONUNBUFFERED: '1',
+        PYTHONIOENCODING: 'utf-8'
       }
-
     },
     {
       name: 'tweet_summary',
@@ -26,7 +26,8 @@ module.exports = {
       error_file: './logs/tweet_summary_error.log',
       out_file: './logs/tweet_summary_out.log',
       env: {
-        PYTHONUNBUFFERED: '1'
+        PYTHONUNBUFFERED: '1',
+        PYTHONIOENCODING: 'utf-8'
       }
     }
   ]
