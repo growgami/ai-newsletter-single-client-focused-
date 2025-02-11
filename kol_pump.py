@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 
 from alpha_filter import AlphaFilter
 from error_handler import with_retry, APIError, log_error, RetryConfig
-from category_mapping import CATEGORY_MAP, CATEGORY_KEYWORDS
+from category_mapping import CATEGORY, CATEGORY_KEYWORDS
 
 # Setup logging
 logging.basicConfig(
@@ -28,7 +28,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class KOLPump:
-    def __init__(self, config: Dict):
+    def __init__(self, config):
         """Initialize KOLPump with configuration"""
         if not all(key in config for key in ['slack_bot_token', 'slack_app_token', 'apify_api_token']):
             raise ValueError("Missing required configuration keys")
@@ -44,148 +44,82 @@ class KOLPump:
         
     def setup_slack_handlers(self):
         """Setup Slack event handlers"""
-        @self.slack_app.event("app_mention")
-        async def handle_mention(event, say):
-            logger.info(f"🎯 Received raw event: {json.dumps(event, indent=2)}")
-            try:
-                await self.handle_mention(event, say)
-            except Exception as e:
-                logger.error(f"Error handling mention: {str(e)}")
-                await say(f"Error processing request: {str(e)}")
-
         @self.slack_app.event("message")
         async def handle_message(message, say):
             logger.info(f"📨 Received message event: {json.dumps(message, indent=2)}")
+            try:
+                await self.handle_message(message, say)
+            except Exception as e:
+                logger.error(f"Error handling message: {str(e)}")
+                await say(f"❌ Error processing message: {str(e)}")
 
         # Add startup message
         logger.info("🚀 Slack event handlers registered")
 
-    def _extract_twitter_urls_and_categories(self, text: str) -> List[Dict[str, str]]:
-        """Extract Twitter URLs and their associated categories from text"""
-        # Split message into lines
-        lines = text.strip().split('\n')
-        urls_with_categories = []
+    def _extract_twitter_urls(self, text: str) -> List[str]:
+        """Extract Twitter URLs from text"""
+        if not text:
+            return []
+            
+        # Extract URL using pattern
+        twitter_pattern = r'https?://(?:www\.)?(?:twitter\.com|x\.com)/\S+'
+        urls = re.findall(twitter_pattern, text)
         
-        for line in lines:
-            # Skip the @mention line
-            if line.startswith('<@'):
-                continue
-                
-            # Match "Category - URL" format
-            parts = line.split('-', 1)
-            if len(parts) != 2:
-                continue
-                
-            category = parts[0].strip()
-            url_part = parts[1].strip()
-            
-            # Extract URL using existing pattern
-            twitter_pattern = r'https?://(?:www\.)?(?:twitter\.com|x\.com)/\S+'
-            urls = re.findall(twitter_pattern, url_part)
-            
-            if urls:
-                urls_with_categories.append({
-                    'category': category,
-                    'url': urls[0].strip('<>')  # Clean URL
-                })
-                logger.info(f"Found Twitter URL for category '{category}': {urls[0]}")
-            
-        if not urls_with_categories:
-            logger.info("No category-URL pairs found in message")
-        else:
-            logger.info(f"Extracted {len(urls_with_categories)} category-URL pairs")
-            
-        return urls_with_categories
+        # Clean URLs
+        cleaned_urls = [url.strip('<>') for url in urls]
+        
+        if cleaned_urls:
+            logger.info(f"Found {len(cleaned_urls)} Twitter URLs")
+        
+        return cleaned_urls
 
-    def _determine_column_id(self, category: str) -> str:
-        """Determine column ID based on category name"""
-        # First try exact match in category map
-        for col_id, cat_name in CATEGORY_MAP.items():
-            if category.lower() == cat_name.lower():
-                return col_id
-                
-        # Then try matching keywords
-        category_lower = category.lower()
-        for cat_name, keywords in CATEGORY_KEYWORDS.items():
-            if any(kw.lower() in category_lower for kw in keywords):
-                # Find column ID for this category
-                for col_id, map_cat in CATEGORY_MAP.items():
-                    if cat_name.lower() == map_cat.lower():
-                        return col_id
-                        
-        # Default to column 1 (KOL) if no match found
-        logger.warning(f"No category mapping found for '{category}', using default column 1")
-        return "1"
-
-    async def handle_mention(self, event: Dict, say):
-        """Handle mentions in Slack channels"""
-        message_text = event.get('text', '')
-        user_id = event.get('user', 'unknown')
-        channel_id = event.get('channel', 'unknown')
+    async def handle_message(self, message: Dict, say):
+        """Handle messages in Slack channels"""
+        message_text = message.get('text', '').lower()
         
-        logger.info(f"Received mention from user <@{user_id}> in channel <#{channel_id}>")
-        logger.info(f"Message: {message_text}")
-        
-        # Extract Twitter URLs with categories
-        urls_with_categories = self._extract_twitter_urls_and_categories(message_text)
-        if not urls_with_categories:
-            await say("I couldn't find any properly formatted category-URL pairs. Please use the format:\n`Category - URL`\nFor example:\n`Polkadot - https://x.com/...`")
+        # Check if message contains any category keywords
+        if not any(keyword.lower() in message_text for keyword in CATEGORY_KEYWORDS):
             return
             
-        await say(f"I found {len(urls_with_categories)} tweet{'' if len(urls_with_categories) == 1 else 's'} to process! Let me handle {'it' if len(urls_with_categories) == 1 else 'them'} for you... 🚀")
+        # Extract Twitter URLs
+        urls = self._extract_twitter_urls(message_text)
+        if not urls:
+            return
+            
+        logger.info(f"Processing {len(urls)} URLs from message containing {CATEGORY} keywords")
+        await say(f"🔍 Found {len(urls)} tweet{'' if len(urls) == 1 else 's'} related to {CATEGORY}. Processing...")
         
         try:
-            all_processed_tweets = []
-            category_summary = []
+            # Scrape tweets
+            tweets = await self._scrape_tweets(urls)
+            if not tweets:
+                await say("⚠️ No tweets could be retrieved from the provided URLs.")
+                return
+                
+            # Transform to alpha filter format
+            transformed_tweets = self._transform_to_alpha_format(tweets)
             
-            for item in urls_with_categories:
-                category = item['category']
-                url = item['url']
-                column_id = self._determine_column_id(category)
-                
-                # Scrape tweet
-                await say(f"Getting the tweet for {category}... 📥")
-                tweets = await self._scrape_tweets([url])
-                if not tweets:
-                    await say(f"⚠️ Couldn't fetch the tweet for {category}. Skipping...")
-                    continue
-                    
-                # Transform and add category
-                transformed_tweets = self._transform_to_alpha_format(tweets)
-                for tweet in transformed_tweets:
-                    tweet['category'] = category
-                
-                # Add to alpha filter with specific column
-                await self._add_to_alpha_filter(transformed_tweets, column_id)
-                
-                all_processed_tweets.extend(transformed_tweets)
-                category_summary.append(f"• {category} → Column #{column_id} 📊")
+            # Add to alpha filter output
+            await self._add_to_alpha_output(transformed_tweets)
             
-            if all_processed_tweets:
-                # Send detailed success message
-                current_time = datetime.now(zoneinfo.ZoneInfo('UTC')).strftime('%Y-%m-%d %H:%M:%S')
-                success_message = (
-                    f"All done! Here's what I processed:\n\n"
-                    f"{chr(10).join(category_summary)}\n\n"
-                    f"Total tweets processed: {len(all_processed_tweets)} ✅\n"
-                    f"Processed at: {current_time} UTC 🕒\n\n"
-                    f"The content will be included in the next analysis run. Is there anything else you need help with? 😊"
-                )
-                await say(success_message)
-                
-                # Log success
-                logger.info(f"Successfully processed {len(all_processed_tweets)} tweets from user <@{user_id}>")
-            else:
-                await say("I wasn't able to process any of the tweets. Please check if the tweets are accessible and try again. 🤔")
+            # Send success message with details
+            current_time = datetime.now(zoneinfo.ZoneInfo('UTC')).strftime('%H:%M:%S UTC')
+            success_message = (
+                f"✅ Successfully processed {len(transformed_tweets)} tweet{'' if len(transformed_tweets) == 1 else 's'}!\n"
+                f"• Category: {CATEGORY}\n"
+                f"• Time: {current_time}\n"
+                f"• Author{'' if len(transformed_tweets) == 1 else 's'}: "
+                f"{', '.join([f'@{t['author']}' for t in transformed_tweets])}"
+            )
+            await say(success_message)
             
         except Exception as e:
-            error_msg = (
-                f"I ran into an issue while processing your request:\n"
-                f"```{str(e)}```\n"
-                f"Could you try again? If the problem persists, there might be an issue with accessing the tweets or our services. 🔧"
+            error_message = (
+                f"❌ Error processing tweets: {str(e)}\n"
+                f"Please try again or contact support if the issue persists."
             )
-            logger.error(f"Error processing tweets: {str(e)}")
-            await say(error_msg)
+            logger.error(f"Error processing message: {str(e)}")
+            await say(error_message)
 
     @with_retry(RetryConfig(max_retries=3, base_delay=2.0))
     async def _scrape_tweets(self, urls: List[str]) -> List[Dict]:
@@ -245,17 +179,10 @@ class KOLPump:
                     'id': item.get('id', ''),
                     'url': item.get('url', ''),
                     'author': item.get('author', {}).get('userName', '') if item.get('author') else '',
-                    'quoted_content': '',
-                    'reposted_content': ''
+                    'created_at': item.get('createdAt', ''),
+                    'quoted_tweet': item.get('quoted_tweet', {}),
+                    'retweeted_tweet': item.get('retweeted_tweet', {})
                 }
-                
-                # Get quoted tweet content if any
-                if item.get('quoted_tweet'):
-                    tweet_data['quoted_content'] = item['quoted_tweet'].get('text', '')
-                    
-                # Get reposted tweet content if any
-                if item.get('retweeted_tweet'):
-                    tweet_data['reposted_content'] = item['retweeted_tweet'].get('text', '')
                 
                 # Validate tweet data
                 if tweet_data['text'] and tweet_data['author'] and tweet_data['id']:
@@ -271,84 +198,69 @@ class KOLPump:
         except Exception as e:
             logger.error(f"Error scraping tweets: {str(e)}")
             raise APIError(f"Failed to scrape tweets: {str(e)}")
-            
+
     def _transform_to_alpha_format(self, apify_tweets: List[Dict]) -> List[Dict]:
         """Transform Apify tweet format to alpha filter format"""
         transformed = []
-        date_str = datetime.now(zoneinfo.ZoneInfo("UTC")).strftime('%Y%m%d')
         
         for tweet in apify_tweets:
-            try:
-                transformed.append({
-                    "tweet": tweet['text'],
-                    "author": tweet['author'],
-                    "url": tweet['url'],
-                    "quoted_content": tweet['quoted_content'],
-                    "reposted_content": tweet['reposted_content'],
-                    "content_id": str(tweet['id']),
-                    "category": "KOL",  # Default category for KOL-sourced tweets
-                    "processed_date": date_str
-                })
-                
-                logger.debug(f"Successfully transformed tweet {tweet['id']}")
-                
-            except KeyError as e:
-                logger.error(f"Error transforming tweet: {str(e)}")
-                continue
-                
-        return transformed
+            transformed.append({
+                "tweet": tweet['text'],
+                "author": tweet['author'],
+                "url": tweet['url'],
+                "tweet_id": tweet['id'],
+                "quoted_content": tweet.get('quoted_tweet', {}).get('text', ''),
+                "reposted_content": tweet.get('retweeted_tweet', {}).get('text', ''),
+                "category": CATEGORY,
+                "processed_at": datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat(),
+                "original_date": tweet.get('created_at', ''),
+                "column": "0"  # Default to 0 for KOL pump
+            })
         
-    async def _add_to_alpha_filter(self, tweets: List[Dict], column_id: str = "1"):
-        """Add transformed tweets to alpha filter with specific column"""
-        if not tweets:
-            logger.warning("No tweets to add to alpha filter")
+        return transformed
+
+    async def _add_to_alpha_output(self, new_tweets: List[Dict]):
+        """Add transformed tweets to alpha filter output"""
+        if not new_tweets:
             return
             
-        date_str = datetime.now(zoneinfo.ZoneInfo("UTC")).strftime('%Y%m%d')
-        column_file = self.alpha_filter.filtered_dir / f'column_{column_id}.json'
+        output_file = self.alpha_filter.filtered_dir / 'combined_filtered.json'
         
         try:
-            # Ensure directory exists
-            column_file.parent.mkdir(parents=True, exist_ok=True)
-            
             # Read existing data or create new structure
-            if column_file.exists():
-                logger.info(f"Reading existing data from {column_file}")
-                with open(column_file, 'r') as f:
+            if output_file.exists():
+                with open(output_file, 'r') as f:
                     existing_data = json.load(f)
-                    existing_tweets = existing_data.get('tweets', [])
             else:
-                logger.info(f"Creating new data file at {column_file}")
-                existing_tweets = []
-                
-            # Add new tweets
-            existing_tweets.extend(tweets)
-            
-            # Update file
-            file_data = {
-                'tweets': existing_tweets,
-                'metadata': {
-                    'total_tweets': len(existing_tweets),
-                    'last_update': datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat(),
-                    'last_processed_date': date_str,
-                    'processing_dates': [date_str]
+                existing_data = {
+                    'tweets': [],
+                    'metadata': {
+                        'processed_date': datetime.now(zoneinfo.ZoneInfo("UTC")).strftime('%Y%m%d'),
+                        'total_tweets': 0,
+                        'last_update': datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat()
+                    }
                 }
-            }
             
-            # Log before writing
-            logger.info(f"Writing {len(tweets)} new tweets to {column_file}")
-            logger.info(f"Total tweets after update: {len(existing_tweets)}")
+            # Add new tweets
+            existing_data['tweets'].extend(new_tweets)
             
-            # Use atomic write
-            with open(column_file, 'w') as f:
-                json.dump(file_data, f, indent=2)
+            # Update metadata
+            existing_data['metadata']['total_tweets'] = len(existing_data['tweets'])
+            existing_data['metadata']['last_update'] = datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat()
             
-            logger.info(f"Successfully updated {column_file}")
+            # Save atomically
+            temp_file = output_file.with_suffix('.tmp')
+            with open(temp_file, 'w') as f:
+                json.dump(existing_data, f, indent=2)
+            temp_file.replace(output_file)
+            
+            logger.info(f"Added {len(new_tweets)} new tweets to alpha filter output")
             
         except Exception as e:
-            logger.error(f"Error adding tweets to alpha filter: {str(e)}")
-            raise
-            
+            logger.error(f"Error adding tweets to alpha output: {str(e)}")
+            if temp_file.exists():
+                temp_file.unlink()
+
     async def start(self):
         """Start the Slack bot"""
         try:
@@ -363,6 +275,8 @@ class KOLPump:
             logger.info(f"Bot configured with:")
             logger.info(f"- Socket Mode: Enabled")
             logger.info(f"- Bot User ID: {await self._get_bot_user_id()}")
+            logger.info(f"- Monitoring for category: {CATEGORY}")
+            logger.info(f"- Keywords: {', '.join(CATEGORY_KEYWORDS)}")
             
             await self.handler.start_async()
             logger.info("✅ Bot successfully started and listening for events!")
@@ -385,7 +299,7 @@ class KOLPump:
         try:
             logger.info("Stopping bot...")
             if self.handler:
-                await self.handler.disconnect()  # Use disconnect() instead of stop()
+                await self.handler.disconnect()
             await self.slack_app.stop()
             logger.info("Bot stopped successfully")
         except Exception as e:
