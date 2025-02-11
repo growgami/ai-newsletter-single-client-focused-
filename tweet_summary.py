@@ -169,8 +169,8 @@ class TweetSummary:
                 logger.info("✅ SCHEDULED PROCESSING - Alpha filtering complete")
                 
                 # Clear processed file after successful run
-                input_file = self.data_processor._get_input_file(date_str)
-                if input_file and input_file.exists():
+                input_file = self.data_dir / 'processed' / f'{date_str}_processed.json'
+                if input_file.exists():
                     input_file.unlink()
                     logger.info(f"🗑️ SCHEDULED PROCESSING - Cleared processed file for date: {date_str}")
             else:
