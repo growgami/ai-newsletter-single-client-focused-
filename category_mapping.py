@@ -4,16 +4,16 @@ from typing import Dict, List
 import os
 from dotenv import load_dotenv
 
+load_dotenv()
+
 # Primary category constant
 # Used in:
 # - news_filter.py: For categorizing tweets
 # - content_filter.py: For filtering relevant content
 # - alpha_filter.py: For initial filtering
 # - telegram_sender.py: For message formatting
+# - tweet_summary.py: For output file counting
 CATEGORY: str = 'Polkadot'
-
-# Load environment variables first
-load_dotenv()
 
 # Channel ID mapping for Telegram
 # Used in:
