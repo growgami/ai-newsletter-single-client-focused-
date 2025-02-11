@@ -169,10 +169,10 @@ class TweetSummary:
                 logger.info("✅ SCHEDULED PROCESSING - Alpha filtering complete")
                 
                 # Clear processed file after successful run
-                input_file = self.data_dir / 'processed' / f'{date_str}_processed.json'
-                if input_file.exists():
-                    input_file.unlink()
-                    logger.info(f"🗑️ SCHEDULED PROCESSING - Cleared processed file for date: {date_str}")
+                processed_file = self.data_dir / 'processed' / f'{date_str}_processed.json'
+                if processed_file.exists():
+                    processed_file.unlink()
+                    logger.info(f"🗑️ SCHEDULED PROCESSING - Cleared processed file: {date_str}_processed.json")
             else:
                 logger.info("ℹ️ SCHEDULED PROCESSING - No new tweets to process")
             
@@ -225,6 +225,7 @@ class TweetSummary:
                     current_time = datetime.now(zoneinfo.ZoneInfo("UTC"))
                     logger.info(f"🕒 HOURLY CHECK - Starting at {current_time.strftime('%H:%M:%S UTC')}")
                     logger.info("🔍 Checking filter outputs...")
+                    
                     # Check alpha filter output only if alpha filter isn't running
                     if not self.alpha_filter_running:
                         alpha_file = self.data_dir / 'filtered' / 'alpha_filtered' / 'combined_filtered.json'
