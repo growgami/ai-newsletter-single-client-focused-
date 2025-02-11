@@ -18,6 +18,7 @@ from alpha_filter import AlphaFilter
 from content_filter import ContentFilter
 from news_filter import NewsFilter
 from telegram_sender import TelegramSender
+from category_mapping import CATEGORY
 
 # Setup logging with more detailed format
 logging.basicConfig(
@@ -88,8 +89,8 @@ class TweetSummary:
         }
         logger.info(f"✓ Thresholds configured: Content Filter: {self.thresholds['content_filter']}, News Filter: {self.thresholds['news_filter']}")
         
-        self.check_interval = 120
-        logger.info(f"✓ Check interval set to {self.check_interval} seconds")
+        self.check_interval = 3600  # Changed from 120 to 3600 seconds (1 hour)
+        logger.info(f"✓ Check interval set to {self.check_interval} seconds (hourly checks)")
         logger.info("✅ Tweet Summary Process initialization complete")
 
     def _initialize_directories(self):
@@ -145,42 +146,42 @@ class TweetSummary:
             self.is_processing = True
             self.alpha_filter_running = True
             current_time = datetime.now(zoneinfo.ZoneInfo("UTC"))
-            logger.info(f"🌙 Starting scheduled processing at {current_time}")
+            logger.info(f"🕒 SCHEDULED PROCESSING - Starting at {current_time.strftime('%H:%M:%S UTC')}")
             
             # Get yesterday's date
             yesterday = current_time - timedelta(days=1)
             date_str = yesterday.strftime('%Y%m%d')
-            logger.info(f"Processing data for date: {date_str}")
+            logger.info(f"📅 SCHEDULED PROCESSING - Target date: {date_str}")
             
             # Reset alpha filter state before processing
-            logger.info("🔄 Resetting alpha filter state")
+            logger.info("🔄 SCHEDULED PROCESSING - Resetting alpha filter state")
             self.alpha_filter.reset_state()
             
             # Step 1: Run data processor first
-            logger.info("📥 Starting data processing")
+            logger.info("📥 SCHEDULED PROCESSING - Starting data processing")
             processed_count = await self.data_processor.process_tweets(date_str)
             if processed_count > 0:
-                logger.info(f"✅ Data processing complete - processed {processed_count} tweets")
+                logger.info(f"✅ SCHEDULED PROCESSING - Processed {processed_count} tweets")
                 
                 # Step 2: Run alpha filter on the same date's data
-                logger.info(f"🔄 Starting alpha filtering for date: {date_str}")
+                logger.info(f"🔄 SCHEDULED PROCESSING - Starting alpha filtering")
                 await self.alpha_filter.process_content(date_str)
-                logger.info("✅ Alpha filtering complete")
+                logger.info("✅ SCHEDULED PROCESSING - Alpha filtering complete")
                 
                 # Clear processed file after successful run
                 input_file = self.data_processor._get_input_file(date_str)
                 if input_file and input_file.exists():
                     input_file.unlink()
-                    logger.info(f"Cleared processed file for date: {date_str}")
+                    logger.info(f"🗑️ SCHEDULED PROCESSING - Cleared processed file for date: {date_str}")
             else:
-                logger.info("ℹ️ No new tweets to process")
+                logger.info("ℹ️ SCHEDULED PROCESSING - No new tweets to process")
             
         except Exception as e:
-            logger.error(f"❌ Error in scheduled processing: {str(e)}")
+            logger.error(f"❌ SCHEDULED PROCESSING - Error: {str(e)}")
         finally:
             self.is_processing = False
             self.alpha_filter_running = False
-            logger.info("📝 Processing cycle completed")
+            logger.info("📝 SCHEDULED PROCESSING - Cycle completed")
 
     def _count_tweets_in_file(self, file_path: Path) -> int:
         """Count tweets in a file"""
@@ -190,7 +191,18 @@ class TweetSummary:
                 
             with open(file_path) as f:
                 data = json.load(f)
+                
+            # Handle both file structures
+            if 'tweets' in data:
+                # Alpha filter output structure
                 return len(data.get('tweets', []))
+            elif CATEGORY in data:
+                # Content/News filter output structure
+                return len(data[CATEGORY].get('tweets', []))
+            else:
+                logger.error(f"Unknown file structure in {file_path}")
+                return 0
+                
         except Exception as e:
             logger.error(f"Error reading {file_path}: {str(e)}")
             return 0
@@ -206,10 +218,12 @@ class TweetSummary:
 
     async def continuous_monitoring(self):
         """Monitor output files and trigger processing"""
-        logger.info("🔄 Starting continuous monitoring process")
+        logger.info("🔄 Starting continuous monitoring process (hourly checks)")
         while self.is_running:
             try:
                 if not self.is_processing:
+                    current_time = datetime.now(zoneinfo.ZoneInfo("UTC"))
+                    logger.info(f"🕒 HOURLY CHECK - Starting at {current_time.strftime('%H:%M:%S UTC')}")
                     logger.info("🔍 Checking filter outputs...")
                     # Check alpha filter output only if alpha filter isn't running
                     if not self.alpha_filter_running:
@@ -260,7 +274,7 @@ class TweetSummary:
                         
                         self.is_processing = False
 
-                logger.info("💤 Monitoring cycle complete, waiting for next check...")
+                logger.info(f"💤 Hourly check complete at {datetime.now(zoneinfo.ZoneInfo('UTC')).strftime('%H:%M:%S UTC')}, next check in 1 hour")
                 await asyncio.sleep(self.check_interval)
                 
             except Exception as e:
