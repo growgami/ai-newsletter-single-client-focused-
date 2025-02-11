@@ -116,8 +116,10 @@ class ContentFilter:
 
     def _get_input_file(self, date_str):
         """Get input file path from alpha_filter"""
-        return self.input_dir / 'combined_filtered.json'
-
+        if not date_str:
+            return self.input_dir / 'combined_filtered.json'
+        return self.input_dir / f'{date_str}_filtered.json'
+    
     def _get_output_file(self, date_str):
         """Get output file path"""
         return self.output_dir / 'combined_filtered.json'
