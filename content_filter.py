@@ -118,7 +118,7 @@ class ContentFilter:
         """Get input file path from alpha_filter"""
         # Always use combined_filtered.json from alpha_filter output
         return self.input_dir / 'combined_filtered.json'
-    
+
     def _get_output_file(self, date_str):
         """Get output file path"""
         return self.output_dir / 'combined_filtered.json'
@@ -192,7 +192,7 @@ class ContentFilter:
                 self.openai_client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[{"role": "user", "content": prompt}],
-                    temperature=0.3,
+                    temperature=0.6,
                     response_format={"type": "json_object"},
                     max_tokens=500
                 ),
@@ -208,121 +208,86 @@ class ContentFilter:
             logger.warning(f"OpenAI request failed: {str(e)}")
             return None
 
-    async def _extract_summary(self, tweet_text, reposted_text='', quoted_text='', author=''):
+    async def _extract_summary(self, tweet_text, reposted_text='', quoted_text='', author='', category=''):
         """Extract an accurate and informative summary from all content sources"""
         try:
             await self.circuit_breaker.check()
             
             prompt = f"""
-            Create a clear, factual summary combining key information from ALL provided content. Follow these rules:
+Generate a concise, news-style summary from the provided content. Follow these rules exactly:
 
-            1. CONTENT TO ANALYZE:
-            Main tweet: {tweet_text}
-            Quoted content: {quoted_text}
-            Reposted content: {reposted_text}
+INPUT CONTENT:
+Tweet: {tweet_text}
+Quoted: {quoted_text}
+Reposted: {reposted_text}
+Author: {author}
 
-            2. ATTRIBUTION AND CONTENT FLOW:
-            - Attribution and Content must form ONE natural sentence
-            - Choose the most appropriate subject as Attribution:
-              * Use project/platform name when:
-                - Official announcements from their verified account (@SeiNetwork, @Binance)
-                - Project metrics/stats from reliable sources
-                - Project launches or updates from team members
-                - Example: "Sei Surpasses $23B in Volume" (from @SeiNetwork)
-              * Use organization name when:
-                - Official announcements from their verified account
-                - Organization metrics/stats from reliable sources
-                - Example: "Binance Lists New Trading Pairs" (from @binance)
-              * Use research firm name when:
-                - Publishing official research/analysis from their account
-                - Example: "Delphi Digital Analyzes Layer-2 Growth" (from @Delphi_Digital)
-              * For personal content, use the ACTUAL TWEET AUTHOR:
-                - For price predictions/analysis
-                - For trading strategies
-                - For personal opinions
-                - The author of this tweet is: {author}
-                - Example input: "Just analyzed $SEI price action"
-                  Output: "{author}: $SEI Shows Strong Support at $0.33"
-              * IMPORTANT: Token Symbol Rules
-                - NEVER use token symbols ($BTC, $SEI, etc.) as attribution
-                - When tweet is about a token, use the actual tweet author with colon
-                  BAD: "$SEI Reaches Support at $0.33"
-                  GOOD: "{author}: $SEI Support Level at $0.33"
-              * For metrics and stats:
-                - Use project name if metric directly relates to project AND from official account
-                  GOOD: "Sei Reports 4.1M Weekly Active Users" (from @SeiNetwork)
-                - Use actual tweet author if personal analysis/interpretation
-                  GOOD: "{author}: $SEI Shows Increasing Volume"
-            - Attribution should be the natural subject of the sentence
-            - Content should be the predicate that completes the sentence
+SUMMARY STRUCTURE:
+A summary must consist of two strictly separated parts that flow naturally together:
+1. Attribution – Who is responsible for the action/achievement:
+   - Use "{category}" when the content is about:
+     * Ecosystem metrics (transaction volume, users, TVL)
+     * Treasury/spending figures
+     * Network performance (throughput, latency)
+     * Official announcements
+   - Use the tweet's author when they are:
+     * Providing analysis/commentary
+     * Making predictions
+     * Sharing personal research/insights
+     * Discussing third-party developments
+   - Never credit a reporter/analyst for the project's own metrics or achievements
+   - The attribution must connect naturally to the content that follows
+   - NEVER include @ symbols in attributions - remove them if present in author names
+   - Format author names as plain text
 
-            3. ATTRIBUTION FORMATTING:
-            - For project/platform names:
-              * Use clean name without @ symbol
-              * Example: "Sei", "Jupiter", "Berachain"
-            - For organizations:
-              * Use official name without @ symbol
-              * Example: "Binance", "Coinbase"
-            - For research firms:
-              * Use official name
-              * Example: "Delphi Digital", "Messari"
-            - For authors (from tweet):
-              * Use the exact author name provided above: {author}
-              * Add colon when discussing token price/analysis
-              * Example: "{author}: Analysis Shows Support Level"
-            - Keep attribution concise and relevant
-            - No verbs or connecting words in attribution (except colon where specified)
+2. Content – A concise, news-like headline (5-15 words) that starts with a strong connector:
+   - Choose connectors that create a natural flow from the attribution
+   - The content should read as a natural continuation of the attribution
+   - Avoid repeating the attribution subject in the content unless needed for clarity
+   - Should be framed positively in relation to the subject
+   - Example pairs:
+     * "{category} reports record transaction growth"
+     * "AnalystName explores rising network metrics"
+     * "{category} reveals treasury figures"
 
-            IMPORTANT RULES:
-            1. The author of this tweet is: {author}
-            2. For personal analysis/predictions, use this exact author name
-            3. Only use project names for official announcements from verified accounts
-            4. When in doubt, use {author} with a colon
+VALID FORMATS (choose based on content type):
+1. Analysis/Commentary:
+   - Format: "Attribution on Content"
+   - Example: "AnalystName on rising network metrics"
+   - Best for: market analysis, trend observations, and general updates.
+2. Official Updates/Actions:
+   - Format: "Attribution [action_word] Content"
+   - Example: "{category} reveals treasury balance"
+   - Best for: official metrics, launches, announcements, and achievements.
+3. Direct Statements/Predictions:
+   - Format: "Attribution: 'Content'"
+   - Example: "AnalystName: 'support level holds at $5.2'"
+   - Best for: price predictions, direct quotes, or strong opinions.
 
-            4. CONTENT FORMATTING:
-            - Content must start with a verb that connects naturally to attribution
-            - CRITICAL: Preserve ALL numerical data and symbols:
-              * Token symbols: Always keep $BTC, $ETH, $ANIME, etc.
-              * Exact numbers: Keep all prices, percentages, volumes
-              * Time references: Keep dates, durations, deadlines
-              * Rankings: Keep position numbers (#1, #30, etc.)
-              * Metrics: TVL, APR, APY, volume, market cap
-            - If source has multiple numbers, prioritize the most significant ones
-            - Use active voice and present tense
-            - Focus on key metrics, updates, or findings
-            - 8-15 words total (attribution + content combined)
-            - Start content with connecting verbs like:
-              * Action verbs: "Surpasses", "Reports", "Launches", "Reveals"
-              * Analysis verbs: "Analyzes", "Predicts", "Shows", "Demonstrates"
-              * Update verbs: "Achieves", "Reaches", "Hits", "Gains"
+FORMAT SELECTION RULES:
+- For content with metrics/numbers, choose the best connector—be it a preposition or an action word—that naturally fits the content.
+- For analysis or trends, use a lower-case preposition; determine the best one based on the content, DO NOT always use "on".
+- For predictions or direct statements, use the colon format.
+- Let your choice of connector be determined by the content; do not default to a specific word.
+- Vary your language to keep each summary unique and natural.
 
-            5. EXAMPLES (showing natural flow):
-            Input: "@peblo100xfinder: Sei network just hit $23B in perp volume! $SEI momentum building up"
-            Output: "Sei Surpasses $23 Billion in Perpetual Volume as $SEI Momentum Builds"
+CONTENT FORMATTING:
+- The entire summary must be 5-15 words long.
+- It should be clear, concise, and styled as a news headline.
+- Include key metrics, time references, token symbols, and specific values over general terms.
+- Start with a strong verb or lower-case preposition and use active voice.
+- The attribution is not always the subject of the Content.
+- Content MUST connect to the subject.
+- Project name usage rules:
+  * If the project is in the Attribution, do not repeat it in the Content
+  * If another entity is the Attribution, you may include the project name in Content for clarity
+  * When included, project name should add necessary context
+- NEVER use unnecessary words or redundant information.
 
-            Input: "@research_firm: New report analyzing Binance token performance and drawdown"
-            Output: "Presto Research Analyzes Maximum Drawdown Patterns in Binance Listings"
-
-            Input: "@random_user: Coinbase users lost over $300M to scams this year according to @zachxbt investigation"
-            Output: "ZachXBT Reveals Coinbase Users Lost Over $300M to Social Engineering"
-
-            Input: "@wlf_intern: World Liberty Fi team announced new token acquisition strategy"
-            Output: "World Liberty Fi Announces New Initiative to Acquire Project Tokens"
-
-            Input: "@berachain_dev: The Honeypaper documentation is now available!"
-            Output: "Berachain Launches Comprehensive Protocol Documentation 'The Honeypaper'"
-
-            IMPORTANT: Your summary MUST:
-            1. Use the most authoritative name as Attribution (not Twitter handles)
-            2. Form a natural flowing sentence when combined
-            3. Preserve ALL numerical values and token symbols
-            4. Start Content with a verb that connects naturally to the Attribution
-            5. Keep the total length between 8-15 words
-
-            Return the summary in this exact format (JSON):
-            {{
-                "attribution": "the chosen attribution",
-                "content": "the content starting with a verb"
+Return a JSON object in this exact format:
+{{
+    "attribution": "who is reporting/discussing (no prepositions/colons)",
+    "content": "include the lower-case preposition/action_word/colon and the actual content"
             }}
             """
             
@@ -362,19 +327,11 @@ class ContentFilter:
                             logger.warning("Missing attribution or content in response")
                             return None
                             
-                        # Verify word count (8-15 words)
+                        # Verify word count (5-15 words)
                         full_text = f"{attribution} {content}"
                         word_count = len(full_text.split())
-                        if not (8 <= word_count <= 15):
-                            logger.warning(f"❌ Summary removed: Word count {word_count} outside 8-15 range")
-                            return None
-                        
-                        # Verify all numbers and symbols are preserved
-                        source_text = ' '.join([t for t in [tweet_text, reposted_text, quoted_text] if t])
-                        numbers_symbols = re.findall(r'\$[\d.]+ *[KMBkmb]?|\$[A-Za-z]+|\d+(?:\.\d+)?%?', source_text)
-                        
-                        if numbers_symbols and not any(num in full_text for num in numbers_symbols):
-                            logger.warning(f"❌ Summary removed: Missing important numbers/symbols: {', '.join(numbers_symbols)}")
+                        if not (5 <= word_count <= 15):
+                            logger.warning(f"❌ Summary removed: Word count {word_count} outside 5-15 range")
                             return None
                         
                         logger.info(f"✅ Summary created: {full_text}")
@@ -460,10 +417,22 @@ class ContentFilter:
             for item in items:
                 metrics = self._extract_metrics(item['content'])
                 if metrics:
+                    # Parse the date if it exists, otherwise use processed_at
+                    date_str = item.get('original_date', '')
+                    if date_str:
+                        try:
+                            date = datetime.strptime(date_str, '%a %b %d %H:%M:%S %z %Y')
+                        except ValueError:
+                            # If parsing fails, try processed_at
+                            date = datetime.fromisoformat(item.get('processed_at', ''))
+                    else:
+                        # Default to processed_at if no original_date
+                        date = datetime.fromisoformat(item.get('processed_at', ''))
+                        
                     tweet_metrics.append({
                         'content': item['content'],
                         'metrics': metrics,
-                        'date': item.get('original_date', ''),
+                        'date': date,
                         'index': items.index(item)
                     })
             
@@ -527,19 +496,35 @@ class ContentFilter:
             # For non-metric duplicates, show detailed analysis
             logger.info("\n🔍 Content Similarity Analysis:")
             
-            prompt = """Analyze these tweets and determine if they contain the same news/information.
-For tweets reporting metrics or numbers (like prices, supply, TVL etc):
-1. If they show the same type of metric increasing/decreasing over time, keep only the most recent update
-2. Example of metric updates (keep only the first one):
-   - "Printed $142,760,509 USDC; Supply: $52,073,308,257"
-   - "Printed $136,330,961 USDC; Supply: $51,930,547,748"
-   - "Printed $124,732,078 USDC; Supply: $51,794,216,787"
+            prompt = """Analyze these tweets for negative sentiment and duplicates. Follow these steps in order:
 
-For other duplicate content, select the most informative version based on:
-1. Specificity (more specific details are better)
-2. Completeness (more context is better)
-3. Clarity (clearer explanation is better)
-4. Numbers and metrics (prefer tweets with specific numbers)
+STEP 1 - REMOVE NEGATIVE SENTIMENT:
+- Remove ALL tweets with:
+  * Negative words/phrases: "despite", "fails", "drop", "decline", "unnoticed", "yet", "invisible"
+  * Critical or unfavorable framing
+  * Negative comparisons or trends
+  * NO EXCEPTIONS - Even if tweet contains useful metrics
+
+STEP 2 - HANDLE DUPLICATES:
+For remaining tweets, identify and handle similar content:
+1. Group tweets that share:
+   * Same metrics (e.g. specific amounts, percentages)
+   * Same topic (e.g. treasury, transactions, growth)
+   * Same time period references
+2. From each group, keep ONLY ONE tweet that is:
+   * Most recent AND
+   * Most complete (has all relevant numbers)
+   * Most clearly written
+3. Remove ALL other tweets from the same group
+4. NEVER keep multiple tweets about:
+   * Same financial figures
+   * Same growth percentages
+   * Same time period metrics
+
+Example of duplicates to remove:
+- "reveals spending amount" vs "reveals spending amount and balance" (keep second - more complete)
+- "reports growth percentage" vs "reports growth percentage with timeframe" (keep second - more specific)
+- "reports metric increased" vs "reports metric increased by specific amount" (keep second - has numbers)
 
 Tweets to analyze:
 {}
@@ -547,14 +532,13 @@ Tweets to analyze:
 Return ONLY a JSON object in this exact format:
 {{
     "are_duplicates": boolean,
-    "keep_item_ids": [integer array of indices to keep],
-    "reason": "string explaining the decision (mention if metric update)",
-    "confidence": float between 0 and 1,
+    "keep_item_ids": [integer array of tweets to keep],
+    "reason": "string explaining which tweets were kept and why",
     "comparison": [
         {{
             "id": integer,
             "status": "kept" or "removed",
-            "reason": "string explaining why this specific tweet was kept or removed"
+            "reason": "string explaining if removed due to sentiment or similarity"
         }}
     ]
 }}""".format(json.dumps([{
@@ -605,6 +589,29 @@ Return ONLY a JSON object in this exact format:
             logger.error(f"Error in duplicate detection: {str(e)}")
             return items
 
+    def _is_similar_content(self, content1, content2):
+        """Check if two content strings are semantically similar"""
+        # Remove common words and punctuation
+        def clean_content(text):
+            common_words = {'on', 'in', 'at', 'by', 'with', 'and', 'the', 'for', 'to', 'of', 'a', 'an'}
+            words = text.lower().split()
+            return ' '.join(w for w in words if w not in common_words)
+        
+        c1 = clean_content(content1)
+        c2 = clean_content(content2)
+        
+        # Check for high word overlap
+        words1 = set(c1.split())
+        words2 = set(c2.split())
+        overlap = len(words1.intersection(words2))
+        max_words = max(len(words1), len(words2))
+        
+        if max_words == 0:
+            return False
+        
+        similarity = overlap / max_words
+        return similarity > 0.6  # 60% word overlap threshold
+
     async def process_column(self, items, column_id):
         """Process a single column of items"""
         try:
@@ -634,7 +641,7 @@ Return ONLY a JSON object in this exact format:
                                 'attribution': result['attribution'],
                                 'content': result['content'],
                                 'url': item.get('url', ''),
-                                'original_date': item.get('original_date', '')
+                                'original_date': item.get('processed_at', '')  # Use processed_at as original_date
                             }
                             chunk_filtered.append(filtered_item)
                             
