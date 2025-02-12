@@ -134,72 +134,79 @@ Key configuration points:
 - `EMOJI_MAP`: Predefined emojis for different content types (no need to modify)
 
 6. **Configure Slack App**
-1. Create a new Slack App at https://api.slack.com/apps
-   ```bash
-   # Required App Scopes
-   channels:history       # View messages in channels
-   channels:read         # View basic channel info
-   chat:write           # Send messages
-   app_mentions:read    # Get notified when app is mentioned
+
+1. Create a New Slack App
+   - Go to https://api.slack.com/apps
+   - Click "Create New App"
+   - Choose "From scratch"
+   - Name your app (e.g., "Arbitrum News Bot")
+   - Select your workspace
+
+2. Setup OAuth & Permissions
+   - Navigate to "OAuth & Permissions" in sidebar
+   - Under "Scopes", add these Bot Token Scopes:
+     ```
+     app_mentions:read
+     channels:history
+     chat:write
+     groups:history
+     im:history
+     ```
+   - Save changes
+
+3. Enable Socket Mode
+   - Go to "Socket Mode" in sidebar
+   - Toggle "Enable Socket Mode" to On
+   - Create an App-Level Token when prompted
+   - Give it the name "Socket Mode Token"
+   - Add the `connections:write` scope
+   - Copy the token starting with `xapp-` for your .env file
+
+4. Setup Event Subscriptions
+   - Go to "Event Subscriptions" in sidebar
+   - Toggle "Enable Events" to On
+   - Under "Subscribe to bot events", add:
+     ```
+     message.channels  # Receive messages in channels
+     message.groups
+     ```
+   - Save changes
+
+5. Install App to Workspace
+   - Go to "Install App" in sidebar
+   - Click "Install to Workspace"
+   - Review and allow permissions
+   - Copy the "Bot User OAuth Token" starting with `xoxb-` for your .env file
+
+6. Add Environment Variables
+   Add to your `.env` file:
+   ```env
+   SLACK_BOT_TOKEN=xoxb-your-bot-token    # Bot User OAuth Token
+   SLACK_APP_TOKEN=xapp-your-app-token    # App-Level Token
    ```
 
-2. Enable Socket Mode
-   - Go to 'Socket Mode' in your app settings
-   - Enable Socket Mode
-   - Generate and save the App-Level Token
-   - Add `connections:write` to token scope
+7. Add Bot to Channels
+   - In each Slack channel where you want the bot:
+     ```
+     /invite @YourBotName
+     ```
+   - Bot must be invited to monitor each channel
 
-3. Install App to Workspace
-   - Go to 'Install App' in settings
-   - Click 'Install to Workspace'
-   - Save the Bot User OAuth Token
+8. Test the Integration
+   - In any channel with the bot:
+     ```
+     arbitrum https://twitter.com/arbitrum/status/123456789
+     ```
+   - Bot should respond with processing status
+   - Successful response includes attribution and content summary
 
-4. Configure Event Subscriptions
-   - Go to 'Event Subscriptions'
-   - Enable events
-   - Subscribe to bot events:
-     * `message.channels`
-     * `app_mention`
-
-5. Add to Channels
-   - Invite bot to channels using `/invite @YourBotName`
-   - Bot will monitor these channels for Twitter/X URLs
-
-Slack configuration points:
-- `SLACK_BOT_TOKEN`: Starts with 'xoxb-' (Bot User OAuth Token)
-- `SLACK_APP_TOKEN`: Starts with 'xapp-' (App-Level Token)
-- Bot requires both tokens to function properly
-- Ensure all required scopes are granted
-- Bot must be invited to channels it should monitor
-
-### Using KOL Pump in Slack
-
-1. **Channel Setup**
-   - Add bot to channel: `/invite @YourBotName`
-   - Bot automatically monitors all messages
-
-2. **Share Content**
-   - Paste Twitter/X URL with category keyword in the same message
-   - Format: `polkadot https://twitter.com/user/status/123...`
-   - Message MUST contain both URL and category keyword
-   - Supports both twitter.com and x.com links
-
-3. **Bot Responses**
-   - ✅ Success: Shows processed tweet count and authors
-   - ❌ Error: Displays error message with details
-   - 🔍 Processing: Indicates when URLs are being analyzed
-
-Example:
-```
-You: polkadot https://twitter.com/user/status/123456789
-Bot: 🔍 Found 1 tweet related to Polkadot. Processing...
-Bot: ✅ Successfully processed 1 tweet!
-     • Category: Polkadot
-     • Time: 12:34:56 UTC
-     • Attribution: username
-```
-
-Note: Messages without the category keyword (e.g., 'polkadot') will be ignored.
+Important Notes:
+- Both tokens are required for the bot to function
+- Bot token (xoxb-) is for API actions
+- App token (xapp-) is for Socket Mode connection
+- Keep your tokens secure and never commit them
+- Bot needs channel invite to monitor messages
+- Messages must include category keyword ('arbitrum') and Twitter URL
 
 ## 🚀 Deployment
 
