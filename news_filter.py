@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import asyncio
 from openai import AsyncOpenAI
 from collections import defaultdict
-from category_mapping import CATEGORY, CATEGORY_FOCUS
+from category_mapping import CATEGORY
 import sys
 
 logger = logging.getLogger(__name__)
@@ -142,28 +142,19 @@ class NewsFilter:
 
     def _validate_tweet_fields(self, tweet):
         """Validate tweet has all required fields"""
-        required_fields = ['attribution', 'content', 'url']  # Removed original_date
+        required_fields = ['attribution', 'content', 'url']
         missing = [f for f in required_fields if f not in tweet]
         if missing:
             logger.error(f"Missing required fields {missing} in tweet")
             return False
         return True
 
-    def _build_prompt(self, tweets, category):
-        """Build prompt for categorizing tweets into dynamic subcategories"""
-        # Get category description from mapping
-        category_desc = CATEGORY_FOCUS.get(category, [])
-        category_context = '\n'.join([f'- {desc}' for desc in category_desc])
-        
+    def _build_subcategory_prompt(self, tweets, category):
+        """Build prompt for generating subcategories from tweets"""
         return f"""
-        You are analyzing tweets for the {category} category. First, validate each tweet's relevance using this category context:
+        You are organizing {category} tweets into logical subcategories based on their content and themes.
 
-        CATEGORY CONTEXT:
-        {category_context}
-
-        Then, group relevant tweets into 2-4 logical subcategories. Exclude any tweets that don't match the category context.
-
-        TWEETS TO ANALYZE:
+        TWEETS TO ORGANIZE:
         {json.dumps(tweets, indent=2)}
 
         REQUIRED OUTPUT FORMAT:
@@ -179,37 +170,27 @@ class NewsFilter:
             }}
         }}
 
-        Rules:
-        1. ONLY include tweets that clearly relate to {category} based on the category context
-        2. Create 2-4 clear, descriptive subcategories for the relevant tweets
-        3. Each relevant tweet must be in exactly one subcategory
-        4. CRITICAL: Preserve ALL original fields and values exactly as they appear in input
-        5. Irrelevant tweets should be excluded completely
-        6. DO NOT modify or rewrite any content - use exact values from input
-        7. Required fields that MUST be preserved exactly: attribution, content, url
+        CATEGORIZATION RULES:
+        1. Create 2-4 clear, descriptive subcategories that best group the content
+        2. Each tweet MUST be placed in exactly one subcategory
+        3. Use clear, descriptive names that reflect the content theme (e.g., "Network Metrics", "Development Updates")
+        4. Group similar topics and themes together
+        5. Consider these aspects when categorizing:
+           - Technical updates and metrics
+           - Financial and market data
+           - Community and governance
+           - Development and infrastructure
+           - Partnerships and adoption
+           - Research and innovation
 
-        Example Output Structure:
-        {{
-            "{category}": {{
-                "Project Updates": [
-                    {{
-                        "attribution": "Polkadot",
-                        "content": "Announces Major Protocol Upgrade with 50% Performance Boost",
-                        "url": "https://twitter.com/..."
-                    }}
-                ],
-                "Ecosystem Growth": [
-                    {{
-                        "attribution": "AcalaNetwork",
-                        "content": "Surpasses $100M TVL Milestone on Polkadot",
-                        "url": "https://twitter.com/..."
-                    }}
-                ]
-            }}
-        }}
+        CRITICAL REQUIREMENTS:
+        1. Preserve ALL original fields and values exactly as they appear in input
+        2. Required fields that MUST be preserved exactly: attribution, content, url
+        3. DO NOT modify or rewrite any content - use exact values from input
+        4. DO NOT create empty subcategories
+        5. DO NOT add or remove tweets
 
-        Return ONLY the JSON output, no explanations.
-        """
+        Return ONLY the JSON output with subcategorized tweets, no explanations."""
 
     async def process_content(self):
         """Process content from combined input file"""
@@ -245,77 +226,53 @@ class NewsFilter:
                 logger.error("No valid tweets found after field validation")
                 return False
 
-            logger.info(f"Processing {len(valid_tweets)} valid tweets from {CATEGORY}")
+            logger.info(f"Processing {len(valid_tweets)} tweets from {CATEGORY}")
 
-            # Build prompt for categorization
-            prompt = self._build_prompt(valid_tweets, CATEGORY)
-            response = await self._api_request(prompt)
+            # Generate subcategories
+            subcategory_prompt = self._build_subcategory_prompt(valid_tweets, CATEGORY)
+            subcategory_response = await self._api_request(subcategory_prompt)
 
-            if response:
-                try:
-                    # Validate JSON structure
-                    result = json.loads(response)
-                    if not isinstance(result, dict):
-                        logger.error(f"Invalid response format - not a dictionary: {response}")
-                        return False
+            if not subcategory_response:
+                logger.error("No response received from subcategory request")
+                return False
 
-                    if CATEGORY not in result:
-                        logger.error(f"Missing category '{CATEGORY}' in response: {response}")
-                        return False
+            result = json.loads(subcategory_response)
 
-                    # Validate subcategories and tweets
-                    subcategories = result[CATEGORY]
-                    if not isinstance(subcategories, dict) or not subcategories:
-                        logger.error(f"Invalid subcategories format: {subcategories}")
-                        return False
+            if not isinstance(result, dict) or CATEGORY not in result:
+                logger.error(f"Invalid subcategory response format")
+                return False
 
-                    # Count total filtered tweets
-                    filtered_tweets = sum(len(tweets) for tweets in subcategories.values())
-                    filtered_out = len(valid_tweets) - filtered_tweets
+            # Validate subcategories and tweets
+            subcategories = result[CATEGORY]
+            if not isinstance(subcategories, dict) or not subcategories:
+                logger.error(f"Invalid subcategories format")
+                return False
 
-                    # Log filtering results
-                    logger.info(f"📊 Filtering Results for {CATEGORY}:")
-                    logger.info(f"   • Original tweets: {len(valid_tweets)}")
-                    logger.info(f"   • Kept tweets: {filtered_tweets}")
-                    logger.info(f"   • Filtered out: {filtered_out}")
-                    logger.info(f"   • Subcategories created: {len(subcategories)}")
-                    for subcat, tweets in subcategories.items():
-                        logger.info(f"     - {subcat}: {len(tweets)} tweets")
+            # Count total categorized tweets
+            categorized_tweets = sum(len(tweets) for tweets in subcategories.values())
 
-                    # Validate all tweets in response
-                    for subcat, tweets in subcategories.items():
-                        if not isinstance(tweets, list):
-                            logger.error(f"Invalid tweets format in {subcat}: {tweets}")
-                            return False
-                        for tweet in tweets:
-                            if not self._validate_tweet_fields(tweet):
-                                logger.error(f"Invalid tweet structure in {subcat}")
-                                return False
+            # Log results
+            logger.info(f"📊 Processing Results for {CATEGORY}:")
+            logger.info(f"   • Input tweets: {len(valid_tweets)}")
+            logger.info(f"   • Categorized tweets: {categorized_tweets}")
+            logger.info(f"   • Subcategories created: {len(subcategories)}")
+            for subcat, tweets in subcategories.items():
+                logger.info(f"     - {subcat}: {len(tweets)} tweets")
 
-                    # Save output atomically
-                    output_file = self._get_output_file()
-                    temp_file = output_file.with_suffix('.tmp')
-                    try:
-                        with open(temp_file, 'w') as f:
-                            json.dump(result, f, indent=2)
-                        temp_file.replace(output_file)
-                        logger.info(f"✅ Successfully saved {output_file.name}")
-                        return True
-                    except Exception as e:
-                        logger.error(f"Error saving output: {str(e)}")
-                        if temp_file.exists():
-                            temp_file.unlink()
-                        return False
-
-                except json.JSONDecodeError as e:
-                    logger.error(f"Invalid JSON response: {str(e)}\nResponse: {response}")
-                    return False
-                except Exception as e:
-                    logger.error(f"Error processing response: {str(e)}\nResponse: {response}")
-                    return False
-
-            logger.warning("No valid response received")
-            return False
+            # Save output atomically
+            output_file = self._get_output_file()
+            temp_file = output_file.with_suffix('.tmp')
+            try:
+                with open(temp_file, 'w') as f:
+                    json.dump(result, f, indent=2)
+                temp_file.replace(output_file)
+                logger.info(f"✅ Successfully saved {output_file.name}")
+                return True
+            except Exception as e:
+                logger.error(f"Error saving output: {str(e)}")
+                if temp_file.exists():
+                    temp_file.unlink()
+                return False
 
         except Exception as e:
             logger.error(f"Error in process_content: {str(e)}")
