@@ -105,12 +105,21 @@ class KOLPump:
             
             # Send success message with details
             current_time = datetime.now(zoneinfo.ZoneInfo('UTC')).strftime('%H:%M:%S UTC')
+            
+            # Create detailed summary
+            tweet_summaries = []
+            for tweet in transformed_tweets:
+                summary = (
+                    f"• *{tweet['attribution']}* {tweet['content']}"
+                )
+                tweet_summaries.append(summary)
+            
             success_message = (
-                f"✅ Successfully processed {len(transformed_tweets)} tweet{'' if len(transformed_tweets) == 1 else 's'}!\n"
+                f"✅ Successfully processed {len(transformed_tweets)} tweet{'' if len(transformed_tweets) == 1 else 's'}!\n\n"
+                f"*Summary:*\n"
                 f"• Category: {CATEGORY}\n"
-                f"• Time: {current_time}\n"
-                f"• Attribution{'' if len(transformed_tweets) == 1 else 's'}: "
-                f"{', '.join([t['attribution'] for t in transformed_tweets])}"
+                f"• Time: {current_time}\n\n"
+                f"{chr(10).join(tweet_summaries)}"
             )
             await say(success_message)
             
