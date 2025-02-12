@@ -109,15 +109,6 @@ TELEGRAM_CHANNELS: Dict[str, str] = {
     # Add more channels as needed
 }
 
-# Category-specific focus areas - Define what content to look for
-CATEGORY_FOCUS: Dict[str, List[str]] = {
-    CATEGORY: [
-        'Focus area 1 - description',
-        'Focus area 2 - description',
-        # Add 8-10 focus areas for best results
-    ]
-}
-
 # Keywords for category identification
 CATEGORY_KEYWORDS: List[str] = [
     'keyword1',
