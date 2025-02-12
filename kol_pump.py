@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 from alpha_filter import AlphaFilter
 from error_handler import with_retry, APIError, log_error, RetryConfig
 from category_mapping import CATEGORY, CATEGORY_KEYWORDS
+from content_filter import ContentFilter
 
 # Setup logging
 logging.basicConfig(
@@ -36,7 +37,7 @@ class KOLPump:
         self.config = config
         self.slack_app = AsyncApp(token=config['slack_bot_token'])
         self.apify_client = ApifyClient(config['apify_api_token'])
-        self.alpha_filter = AlphaFilter(config)
+        self.content_filter = ContentFilter(config)
         self.handler = None
         
         # Setup Slack event handlers
@@ -96,10 +97,10 @@ class KOLPump:
                 await say("⚠️ No tweets could be retrieved from the provided URLs.")
                 return
                 
-            # Transform to alpha filter format
-            transformed_tweets = self._transform_to_alpha_format(tweets)
+            # Transform to content filter format
+            transformed_tweets = await self._transform_to_alpha_format(tweets)
             
-            # Add to alpha filter output
+            # Add to content filter output
             await self._add_to_alpha_output(transformed_tweets)
             
             # Send success message with details
@@ -108,8 +109,8 @@ class KOLPump:
                 f"✅ Successfully processed {len(transformed_tweets)} tweet{'' if len(transformed_tweets) == 1 else 's'}!\n"
                 f"• Category: {CATEGORY}\n"
                 f"• Time: {current_time}\n"
-                f"• Author{'' if len(transformed_tweets) == 1 else 's'}: "
-                f"{', '.join([f'@{t['author']}' for t in transformed_tweets])}"
+                f"• Attribution{'' if len(transformed_tweets) == 1 else 's'}: "
+                f"{', '.join([t['attribution'] for t in transformed_tweets])}"
             )
             await say(success_message)
             
@@ -199,32 +200,44 @@ class KOLPump:
             logger.error(f"Error scraping tweets: {str(e)}")
             raise APIError(f"Failed to scrape tweets: {str(e)}")
 
-    def _transform_to_alpha_format(self, apify_tweets: List[Dict]) -> List[Dict]:
-        """Transform Apify tweet format to alpha filter format"""
+    async def _transform_to_alpha_format(self, apify_tweets: List[Dict]) -> List[Dict]:
+        """Transform Apify tweet format to content filter format"""
         transformed = []
         
         for tweet in apify_tweets:
-            transformed.append({
-                "tweet": tweet['text'],
-                "author": tweet['author'],
-                "url": tweet['url'],
-                "tweet_id": tweet['id'],
-                "quoted_content": tweet.get('quoted_tweet', {}).get('text', ''),
-                "reposted_content": tweet.get('retweeted_tweet', {}).get('text', ''),
-                "category": CATEGORY,
-                "processed_at": datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat(),
-                "original_date": tweet.get('created_at', ''),
-                "column": "0"  # Default to 0 for KOL pump
-            })
+            # Extract tweet content
+            tweet_text = tweet['text']
+            author = tweet['author']
+            url = tweet['url']
+            quoted_text = tweet.get('quoted_tweet', {}).get('text', '')
+            reposted_text = tweet.get('retweeted_tweet', {}).get('text', '')
+            
+            # Use content filter's extract_summary method
+            result = await self.content_filter._extract_summary(
+                tweet_text=tweet_text,
+                quoted_text=quoted_text,
+                reposted_text=reposted_text,
+                author=author
+            )
+            
+            if result:
+                transformed.append({
+                    'attribution': result['attribution'],
+                    'content': result['content'],
+                    'url': url,
+                    'original_date': tweet.get('created_at', '')
+                })
+            else:
+                logger.warning(f"Failed to generate summary for tweet: {url}")
         
         return transformed
 
     async def _add_to_alpha_output(self, new_tweets: List[Dict]):
-        """Add transformed tweets to alpha filter output"""
+        """Add transformed tweets to content filter output"""
         if not new_tweets:
             return
             
-        output_file = self.alpha_filter.filtered_dir / 'combined_filtered.json'
+        output_file = Path('data/filtered/content_filtered/combined_filtered.json')
         
         try:
             # Read existing data or create new structure
@@ -233,20 +246,13 @@ class KOLPump:
                     existing_data = json.load(f)
             else:
                 existing_data = {
-                    'tweets': [],
-                    'metadata': {
-                        'processed_date': datetime.now(zoneinfo.ZoneInfo("UTC")).strftime('%Y%m%d'),
-                        'total_tweets': 0,
-                        'last_update': datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat()
+                    CATEGORY: {
+                        'tweets': []
                     }
                 }
             
             # Add new tweets
-            existing_data['tweets'].extend(new_tweets)
-            
-            # Update metadata
-            existing_data['metadata']['total_tweets'] = len(existing_data['tweets'])
-            existing_data['metadata']['last_update'] = datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat()
+            existing_data[CATEGORY]['tweets'].extend(new_tweets)
             
             # Save atomically
             temp_file = output_file.with_suffix('.tmp')
@@ -254,10 +260,10 @@ class KOLPump:
                 json.dump(existing_data, f, indent=2)
             temp_file.replace(output_file)
             
-            logger.info(f"Added {len(new_tweets)} new tweets to alpha filter output")
+            logger.info(f"Added {len(new_tweets)} new tweets to content filter output")
             
         except Exception as e:
-            logger.error(f"Error adding tweets to alpha output: {str(e)}")
+            logger.error(f"Error adding tweets to content filter output: {str(e)}")
             if temp_file.exists():
                 temp_file.unlink()
 
