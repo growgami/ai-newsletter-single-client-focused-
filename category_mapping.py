@@ -23,24 +23,6 @@ TELEGRAM_CHANNELS: Dict[str, str] = {
     'POLKADOT': os.getenv('TELEGRAM_POLKADOT_CHANNEL_ID', '')
 }
 
-# Category-specific focus areas for news filtering
-# Used in:
-# - news_filter.py: For determining tweet relevance
-CATEGORY_FOCUS: Dict[str, List[str]] = {
-    CATEGORY: [
-        'Parachain slot auctions and crowdloans - DOT token utility and staking',
-        'Cross-chain messaging (XCM) updates and integrations between parachains',
-        'Network upgrades affecting performance, security, or scalability',
-        'Ecosystem growth metrics (TVL, active addresses, transaction volume)',
-        'Major parachain launches, upgrades, or significant milestones',
-        'Governance proposals and treasury funding decisions',
-        'Strategic partnerships and enterprise adoption',
-        'DeFi protocols and cross-chain liquidity developments',
-        'Technical innovations in consensus, runtime, or core infrastructure',
-        'Market dynamics and token economics (DOT, KSM, parachain tokens)'
-    ]
-}
-
 # Keywords for category identification
 # Used in:
 # - kol_pump.py: For tweet categorization
