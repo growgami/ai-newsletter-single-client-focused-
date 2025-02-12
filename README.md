@@ -172,6 +172,35 @@ Slack configuration points:
 - Ensure all required scopes are granted
 - Bot must be invited to channels it should monitor
 
+### Using KOL Pump in Slack
+
+1. **Channel Setup**
+   - Add bot to channel: `/invite @YourBotName`
+   - Bot automatically monitors all messages
+
+2. **Share Content**
+   - Paste Twitter/X URL with category keyword in the same message
+   - Format: `polkadot https://twitter.com/user/status/123...`
+   - Message MUST contain both URL and category keyword
+   - Supports both twitter.com and x.com links
+
+3. **Bot Responses**
+   - ✅ Success: Shows processed tweet count and authors
+   - ❌ Error: Displays error message with details
+   - 🔍 Processing: Indicates when URLs are being analyzed
+
+Example:
+```
+You: polkadot https://twitter.com/user/status/123456789
+Bot: 🔍 Found 1 tweet related to Polkadot. Processing...
+Bot: ✅ Successfully processed 1 tweet!
+     • Category: Polkadot
+     • Time: 12:34:56 UTC
+     • Attribution: username
+```
+
+Note: Messages without the category keyword (e.g., 'polkadot') will be ignored.
+
 ## 🚀 Deployment
 
 The service uses PM2 for process management and consists of three main processes:
