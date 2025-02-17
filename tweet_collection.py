@@ -45,7 +45,7 @@ class TweetCollector:
         
         # Error tracking
         self.error_count = 0
-        self.max_errors = 5  # Reset browser after 5 errors
+        self.max_errors = 2  # Reset browser after 5 errors
         
         # Ensure directories exist
         self.setup_directories()
@@ -89,6 +89,7 @@ class TweetCollector:
         try:
             if not self.browser or not self.scraper:
                 logger.error("Browser or scraper not initialized")
+                self.error_count += 1  # Increment error count
                 return False
                 
             # Verify TweetDeck URL with incremental delays
@@ -106,6 +107,7 @@ class TweetCollector:
                 if attempt < max_url_attempts - 1:
                     await asyncio.sleep(delay)
                 else:
+                    self.error_count += 1  # Increment error count
                     return False
                 
             # Verify columns are identified with incremental delays
@@ -124,12 +126,14 @@ class TweetCollector:
                     await self.scraper.identify_columns()
                     await asyncio.sleep(delay)
                 else:
+                    self.error_count += 1  # Increment error count
                     return False
                 
             return True
             
         except Exception as e:
             logger.error(f"Error validating TweetDeck: {str(e)}")
+            self.error_count += 1  # Increment error count
             return False
             
     async def collect_tweets(self):
@@ -140,31 +144,37 @@ class TweetCollector:
                 if not await self.validate_tweetdeck():
                     raise BrowserError("Invalid TweetDeck state")
                 
-                # Attempt to scrape
-                results = await self.scraper.scrape_all_columns(is_monitoring=True)
-                
-                # Reset error count on success
-                if results:
-                    self.error_count = 0
-                    
-            except Exception as e:
-                self.error_count += 1
-                logger.error(f"Error in collection loop (error {self.error_count}): {str(e)}")
-                
+                # Check error count before proceeding
                 if self.error_count >= self.max_errors:
                     logger.critical(f"Maximum errors ({self.max_errors}) reached, initiating PM2 process restart")
                     try:
-                        # Cleanup before restart
+                        # Ensure clean browser shutdown
                         await self.shutdown()
-                        
-                        # Exit with special code that PM2 will recognize
                         logger.info("Exiting process for PM2 restart...")
-                        sys.exit(2)  # Exit code 2 signals PM2 to restart
-                        
+                        # Use sys.exit(1) for proper PM2 restart
+                        sys.exit(1)
                     except Exception as shutdown_error:
                         logger.error(f"Error during shutdown: {str(shutdown_error)}")
-                        sys.exit(1)  # Error exit code
-                        
+                        sys.exit(1)
+                
+                # Attempt to scrape
+                try:
+                    results = await self.scraper.scrape_all_columns(is_monitoring=True)
+                    # Reset error count on success
+                    if results:
+                        self.error_count = 0
+                        logger.info("Successful scrape - resetting error count to 0")
+                except Exception as scrape_error:
+                    self.error_count += 1  # Increment error count for scraping errors
+                    logger.error(f"Error in scraping (error {self.error_count}/{self.max_errors}): {str(scrape_error)}")
+                    if self.error_count >= self.max_errors:
+                        logger.critical("Error threshold reached during scraping, triggering restart")
+                        await self.shutdown()
+                        sys.exit(1)
+                    raise  # Re-raise to be caught by outer try-except
+                    
+            except Exception as e:
+                logger.error(f"Error in collection loop (error {self.error_count}/{self.max_errors}): {str(e)}")
                 # Brief pause before retry
                 await asyncio.sleep(2)
 
@@ -191,6 +201,7 @@ class TweetCollector:
         except Exception as e:
             logger.error(f"Error in main loop: {str(e)}")
             await self.shutdown()
+            sys.exit(1)  # Ensure PM2 restart for any unhandled errors
             
         finally:
             await self.shutdown()
