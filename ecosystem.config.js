@@ -10,6 +10,10 @@ module.exports = {
       max_memory_restart: '1G',
       error_file: './logs/tweet_collection_error.log',
       out_file: './logs/tweet_collection_out.log',
+      restart_delay: 5000,
+      min_uptime: '30s',
+      kill_timeout: 3000,
+      exitCodes: [1],
       env: {
         PYTHONUNBUFFERED: '1',
         PYTHONIOENCODING: 'utf-8'
