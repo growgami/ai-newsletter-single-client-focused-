@@ -51,7 +51,7 @@ cd ai-newsletter
 # Install Node.js (Ubuntu/Debian)
 curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
 sudo apt-get install -y nodejs
-
+sudo apt install npm -y
 # Install PM2 globally
 sudo npm install pm2 -g
 ```
@@ -67,6 +67,7 @@ pip3 install -r requirements.txt
 
 # Install Playwright browsers
 playwright install chromium
+playwright install-deps
 ```
 
 4. **Configure environment variables**
