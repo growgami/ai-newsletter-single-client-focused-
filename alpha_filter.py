@@ -8,7 +8,7 @@ import zoneinfo
 import asyncio
 from openai import OpenAI, AsyncOpenAI
 from error_handler import with_retry, APIError, log_error, RetryConfig
-from category_mapping import CATEGORY
+from category_mapping import CATEGORY, ALPHA_CONSIDERATIONS
 
 logger = logging.getLogger(__name__)
 
@@ -193,10 +193,10 @@ class AlphaFilter:
         """Prepare the prompt for filtering content"""
         try:
             # Map fields from data_processor format
-            tweet_text = tweet.get('text', '')  # Changed from 'tweet' to 'text'
-            author = tweet.get('authorHandle', '')  # Changed from 'author' to 'authorHandle'
-            quoted_text = tweet.get('quotedContent', {}).get('text', '') if tweet.get('quotedContent') else ''  # Changed structure
-            reposted_text = tweet.get('repostedContent', {}).get('text', '') if tweet.get('repostedContent') else ''  # Changed structure
+            tweet_text = tweet.get('text', '')
+            author = tweet.get('authorHandle', '')
+            quoted_text = tweet.get('quotedContent', {}).get('text', '') if tweet.get('quotedContent') else ''
+            reposted_text = tweet.get('repostedContent', {}).get('text', '') if tweet.get('repostedContent') else ''
             url = tweet.get('url', '')
             tweet_id = tweet.get('id', '')
             
@@ -204,51 +204,53 @@ class AlphaFilter:
                 logger.warning(f"Missing required content fields for tweet {tweet_id}")
                 return None
                 
-            return f"""
-            Please analyze this content for HIGH-QUALITY ALPHA SIGNALS in the {category} category.
-            If the content meets the criteria, return ONLY the original content in JSON format.
-            If it doesn't meet the criteria, return an empty JSON object {{}}.
-    
-            Content Details:
-            Text: {tweet_text}
-            Author: {author}
-            URL: {url}
-            {f"Quoted content: {quoted_text}" if quoted_text else ""}
-            {f"Reposted content: {reposted_text}" if reposted_text else ""}
-    
-            Scoring criteria (DO NOT include these in output):
-            1. Relevance (0-1): Does the content contain ACTIONABLE alpha?
-               - Must score {self.alpha_threshold}+ to be included
-               - Concrete, time-sensitive alpha with clear action points
-               - Direct mention of ecosystem name + significant update
-    
-            2. Significance (0-1): How important is this for {category}?
-               - Must score 0.7+ to be included
-               - Must impact ecosystem value or token price
-               - Consider timing and exclusivity of information
-    
-            3. Impact (0-1): What measurable effects will this have?
-               - Must score 0.6+ to be included
-               - Focus on quantifiable metrics (TVL, price, volume)
-               - Higher score for immediate impact opportunities
-    
-            4. Ecosystem relevance (0-1): How does this contribute to market dynamics?
-               - Must score 0.7+ to be included
-               - Consider market positioning and competitive advantage
-               - Score based on ecosystem value creation
-    
-            If ALL criteria are met, return ONLY this JSON structure:
-            {{
-                "tweet": "{tweet_text}",
-                "author": "{author}",
-                "url": "{url}",
-                "quoted_content": "{quoted_text}",
-                "reposted_content": "{reposted_text}",
-                "tweet_id": "{tweet_id}"
-            }}
-    
-            If ANY criteria is not met, return: {{}}
-            """
+            # Add each consideration as a new line
+            considerations = "\n".join(ALPHA_CONSIDERATIONS) if ALPHA_CONSIDERATIONS else ""
+                
+            return f"""Please analyze this content for HIGH-QUALITY ALPHA SIGNALS in the {category} category.
+
+{considerations}
+
+Content Details:
+Text: {tweet_text}
+Author: {author}
+URL: {url}
+{f"Quoted content: {quoted_text}" if quoted_text else ""}
+{f"Reposted content: {reposted_text}" if reposted_text else ""}
+
+Scoring criteria (DO NOT include these in output):
+1. Relevance (0-1): Does the content contain ACTIONABLE alpha?
+   - Must score {self.alpha_threshold}+ to be included
+   - Concrete, time-sensitive alpha with clear action points
+   - Direct mention of ecosystem name + significant update
+
+2. Significance (0-1): How important is this for {category}?
+   - Must score 0.7+ to be included
+   - Must impact ecosystem value or token price
+   - Consider timing and exclusivity of information
+
+3. Impact (0-1): What measurable effects will this have?
+   - Must score 0.6+ to be included
+   - Focus on quantifiable metrics (TVL, price, volume)
+   - Higher score for immediate impact opportunities
+
+4. Ecosystem relevance (0-1): How does this contribute to market dynamics?
+   - Must score 0.7+ to be included
+   - Consider market positioning and competitive advantage
+   - Score based on ecosystem value creation
+
+If ALL criteria are met, return ONLY this JSON structure:
+{{
+    "tweet": "{tweet_text}",
+    "author": "{author}",
+    "url": "{url}",
+    "quoted_content": "{quoted_text}",
+    "reposted_content": "{reposted_text}",
+    "tweet_id": "{tweet_id}"
+}}
+
+If ANY criteria is not met, return: {{}}
+"""
         except Exception as e:
             logger.error(f"Error preparing prompt: {str(e)}")
             return None
