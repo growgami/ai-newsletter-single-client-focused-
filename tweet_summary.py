@@ -290,10 +290,10 @@ class TweetSummary:
             # Setup scheduled processing job (every 6 hours)
             self.scheduler.add_job(
                 self.scheduled_processing,
-                CronTrigger(hour='0,6,12,18', minute=0, timezone=timezone.utc),
+                CronTrigger(hour='0,3,6,9,12,15,18,21', minute=0, timezone=timezone.utc),
                 id='scheduled_processing'
             )
-            logger.info("✓ Scheduled processing job set for 00:00, 06:00, 12:00, 18:00 UTC")
+            logger.info("✓ Scheduled processing job set for 00:00, 03:00, 06:00, 09:00, 12:00, 15:00, 18:00, 21:00 UTC")
             
             # Start the scheduler
             self.scheduler.start()
