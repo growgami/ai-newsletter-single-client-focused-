@@ -140,41 +140,31 @@ class TweetCollector:
         """Main tweet collection loop"""
         while self.is_running:
             try:
-                # Validate TweetDeck state
-                if not await self.validate_tweetdeck():
-                    raise BrowserError("Invalid TweetDeck state")
-                
-                # Check error count before proceeding
-                if self.error_count >= self.max_errors:
-                    logger.critical(f"Maximum errors ({self.max_errors}) reached, initiating PM2 process restart")
-                    try:
-                        # Ensure clean browser shutdown
-                        await self.shutdown()
-                        logger.info("Exiting process for PM2 restart...")
-                        # Use sys.exit(1) for proper PM2 restart
-                        sys.exit(1)
-                    except Exception as shutdown_error:
-                        logger.error(f"Error during shutdown: {str(shutdown_error)}")
-                        sys.exit(1)
-                
-                # Attempt to scrape
-                try:
-                    results = await self.scraper.scrape_all_columns(is_monitoring=True)
-                    # Reset error count on success
-                    if results:
-                        self.error_count = 0
-                        logger.info("Successful scrape - resetting error count to 0")
-                except Exception as scrape_error:
-                    self.error_count += 1  # Increment error count for scraping errors
-                    logger.error(f"Error in scraping (error {self.error_count}/{self.max_errors}): {str(scrape_error)}")
-                    if self.error_count >= self.max_errors:
-                        logger.critical("Error threshold reached during scraping, triggering restart")
-                        await self.shutdown()
-                        sys.exit(1)
-                    raise  # Re-raise to be caught by outer try-except
+                # Single try block for all operations
+                results = await self.scraper.scrape_all_columns(is_monitoring=True)
+                # Reset count only on successful scrape
+                if results:
+                    self.error_count = 0
+                    logger.info("Successful scrape - resetting error count to 0")
                     
+            except SystemExit:
+                logger.critical("SystemExit caught, propagating up...")
+                raise  # Always propagate SystemExit
+                
             except Exception as e:
-                logger.error(f"Error in collection loop (error {self.error_count}/{self.max_errors}): {str(e)}")
+                # Single error handling path
+                self.error_count += 1
+                if isinstance(e, BrowserError):
+                    logger.error(f"Browser error (error {self.error_count}/{self.max_errors}): {str(e)}")
+                else:
+                    logger.error(f"Scraping error (error {self.error_count}/{self.max_errors}): {str(e)}")
+                
+                # Check max errors
+                if self.error_count >= self.max_errors:
+                    logger.critical(f"Error threshold reached ({self.max_errors} errors), restarting")
+                    await self.shutdown()
+                    raise SystemExit(1)
+                    
                 # Brief pause before retry
                 await asyncio.sleep(2)
 
@@ -224,14 +214,28 @@ async def main():
         collector = TweetCollector()
         await collector.run()
         
+    except SystemExit as e:
+        # Handle the exit here, outside the async context
+        logger.critical("SystemExit caught in main, initiating process termination...")
+        sys.exit(e.code)
+    except KeyboardInterrupt:
+        logger.info("Keyboard interrupt received")
+        sys.exit(0)
     except Exception as e:
-        logger.error(f"Application error: {str(e)}")
-        if collector:
-            await collector.shutdown()
+        logger.error(f"Unexpected error: {str(e)}")
         sys.exit(1)
         
 if __name__ == "__main__":
     try:
+        logger.info("Starting tweet collection process...")
         asyncio.run(main())
+    except SystemExit as e:
+        # Handle the exit here, outside the async context
+        logger.critical("SystemExit caught in process root, exiting with code {}...".format(e.code))
+        sys.exit(e.code)
     except KeyboardInterrupt:
+        logger.info("Keyboard interrupt received at process root")
         sys.exit(0)
+    except Exception as e:
+        logger.error(f"Unexpected error at process root: {str(e)}")
+        sys.exit(1)
