@@ -145,28 +145,32 @@ class TweetCollector:
                 # Reset count only on successful scrape
                 if results:
                     self.error_count = 0
-                    logger.info("Successful scrape - resetting error count to 0")
+                    logger.info("tweet_scraper - INFO - Successful scrape - resetting error count to 0")
                     
-            except SystemExit:
-                logger.critical("SystemExit caught, propagating up...")
-                raise  # Always propagate SystemExit
-                
             except Exception as e:
-                # Single error handling path
+                # Increment error count first
                 self.error_count += 1
-                if isinstance(e, BrowserError):
-                    logger.error(f"Browser error (error {self.error_count}/{self.max_errors}): {str(e)}")
-                else:
-                    logger.error(f"Scraping error (error {self.error_count}/{self.max_errors}): {str(e)}")
+                error_msg = str(e)
                 
-                # Check max errors
+                # Let the original error propagate from scraper
+                if "Timeout" in error_msg and "ElementHandle.get_attribute" in error_msg:
+                    # Error already logged by scraper
+                    pass
+                else:
+                    logger.error(f"tweet_scraper - ERROR - Scraping error (error {self.error_count}/{self.max_errors}): {error_msg}")
+                
+                # Check max errors - if reached, exit process
                 if self.error_count >= self.max_errors:
-                    logger.critical(f"Error threshold reached ({self.max_errors} errors), restarting")
+                    logger.critical(f"tweet_scraper - CRITICAL - Error threshold reached ({self.max_errors} errors), shutting down...")
                     await self.shutdown()
-                    raise SystemExit(1)
+                    logger.critical("tweet_scraper - CRITICAL - Shutdown complete, exiting with code 1")
+                    os._exit(1)  # Force exit to ensure PM2 restart
                     
-                # Brief pause before retry
-                await asyncio.sleep(2)
+                # If not max errors yet, wait and retry
+                # Use longer delay for timeouts since they're often loading-related
+                wait_time = 5 if "Timeout" in error_msg else 2
+                logger.info(f"tweet_scraper - INFO - Waiting {wait_time} seconds before retry (error count: {self.error_count}/{self.max_errors})")
+                await asyncio.sleep(wait_time)
 
     async def shutdown(self):
         """Cleanup and shutdown"""
@@ -197,9 +201,9 @@ class TweetCollector:
             await self.shutdown()
 
 def handle_interrupt(signum=None, frame=None):
-    """Handle keyboard interrupt"""
-    logger.info("Received interrupt signal - shutting down")
-    sys.exit(0)
+    """Handle keyboard interrupt (Ctrl+C)"""
+    logger.info("Received keyboard interrupt - performing clean shutdown")
+    sys.exit(0)  # Clean exit - don't trigger PM2 restart
 
 async def main():
     """Main entry point"""
