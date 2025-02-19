@@ -226,10 +226,19 @@ class NewsFilter:
                 logger.error("No valid tweets found after field validation")
                 return False
 
-            logger.info(f"Processing {len(valid_tweets)} tweets from {CATEGORY}")
+            # Deduplicate tweets by URL before API processing
+            seen_urls = set()
+            unique_tweets = []
+            for tweet in valid_tweets:
+                url = tweet.get('url')
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    unique_tweets.append(tweet)
 
-            # Generate subcategories
-            subcategory_prompt = self._build_subcategory_prompt(valid_tweets, CATEGORY)
+            logger.info(f"Processing {len(unique_tweets)} unique tweets from {CATEGORY} (removed {len(valid_tweets) - len(unique_tweets)} duplicates)")
+
+            # Generate subcategories with deduplicated tweets
+            subcategory_prompt = self._build_subcategory_prompt(unique_tweets, CATEGORY)
             subcategory_response = await self._api_request(subcategory_prompt)
 
             if not subcategory_response:
@@ -242,7 +251,7 @@ class NewsFilter:
                 logger.error(f"Invalid subcategory response format")
                 return False
 
-            # Validate subcategories and tweets
+            # Validate subcategories
             subcategories = result[CATEGORY]
             if not isinstance(subcategories, dict) or not subcategories:
                 logger.error(f"Invalid subcategories format")
@@ -254,6 +263,7 @@ class NewsFilter:
             # Log results
             logger.info(f"📊 Processing Results for {CATEGORY}:")
             logger.info(f"   • Input tweets: {len(valid_tweets)}")
+            logger.info(f"   • Unique tweets after deduplication: {len(unique_tweets)}")
             logger.info(f"   • Categorized tweets: {categorized_tweets}")
             logger.info(f"   • Subcategories created: {len(subcategories)}")
             for subcat, tweets in subcategories.items():
