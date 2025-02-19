@@ -138,8 +138,14 @@ class TweetScraper:
             return tweets
             
         except Exception as e:
-            logger.error(f"Error getting tweets from column {column_id}: {str(e)}", exc_info=True)
-            raise
+            error_msg = str(e)
+            if "Timeout" in error_msg and "ElementHandle.get_attribute" in error_msg:
+                logger.error(f"tweet_scraper - ERROR - Error getting tweets from column {column_id}: ElementHandle.get_attribute. Timeout 30000ms exceeded.")
+                logger.error("Call log:")
+                logger.error('    waiting for locator("scope")')
+            else:
+                logger.error(f"tweet_scraper - ERROR - Error getting tweets from column {column_id}: {error_msg}")
+            raise  # Still propagate up for main error handling
             
     async def _get_column_tweets_internal(self, column_id, is_monitoring=False):
         """Internal method with the original get_column_tweets logic"""
