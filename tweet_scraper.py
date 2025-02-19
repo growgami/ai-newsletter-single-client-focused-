@@ -49,6 +49,10 @@ class TweetScraper:
         try:
             logger.info("Searching for TweetDeck columns...")
             
+            # Wait 25 seconds for TweetDeck to fully load (staying under PM2's 30s min_uptime)
+            logger.info("Waiting 20 seconds for TweetDeck to fully load...")
+            await asyncio.sleep(20)
+            
             # Try multiple times to find columns with a short delay
             max_attempts = 3
             for attempt in range(max_attempts):
