@@ -85,7 +85,7 @@ class TweetSummary:
         # Monitoring thresholds
         self.thresholds = {
             'content_filter': 5,
-            'news_filter': 15
+            'news_filter': 10
         }
         logger.info(f"✓ Thresholds configured: Content Filter: {self.thresholds['content_filter']}, News Filter: {self.thresholds['news_filter']}")
         
