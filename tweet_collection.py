@@ -145,31 +145,33 @@ class TweetCollector:
                 # Reset count only on successful scrape
                 if results:
                     self.error_count = 0
-                    logger.info("tweet_scraper - INFO - Successful scrape - resetting error count to 0")
+                    logger.info("[PM2] Successful scrape - resetting error count to 0")
                     
             except Exception as e:
-                # Increment error count first
-                self.error_count += 1
                 error_msg = str(e)
+                previous_count = self.error_count
                 
-                # Let the original error propagate from scraper
-                if "Timeout" in error_msg and "ElementHandle.get_attribute" in error_msg:
-                    # Error already logged by scraper
-                    pass
-                else:
-                    logger.error(f"tweet_scraper - ERROR - Scraping error (error {self.error_count}/{self.max_errors}): {error_msg}")
+                # Count errors from error message
+                if "timeout errors" in error_msg:
+                    timeout_count = int(error_msg.split()[0])
+                    self.error_count += timeout_count
+                    logger.error(f"[PM2] Error count increased from {previous_count} to {self.error_count} ({timeout_count} timeout errors)")
+                    
+                if "other errors" in error_msg:
+                    other_count = int(error_msg.split("and")[1].split()[0])
+                    self.error_count += other_count
+                    logger.error(f"[PM2] Error count increased from {previous_count} to {self.error_count} ({other_count} other errors)")
                 
                 # Check max errors - if reached, exit process
                 if self.error_count >= self.max_errors:
-                    logger.critical(f"tweet_scraper - CRITICAL - Error threshold reached ({self.max_errors} errors), shutting down...")
+                    logger.critical(f"[PM2] RESTARTING - Error threshold reached ({self.error_count}/{self.max_errors} errors)")
                     await self.shutdown()
-                    logger.critical("tweet_scraper - CRITICAL - Shutdown complete, exiting with code 1")
+                    logger.critical("[PM2] Shutdown complete, forcing restart...")
                     os._exit(1)  # Force exit to ensure PM2 restart
                     
                 # If not max errors yet, wait and retry
-                # Use longer delay for timeouts since they're often loading-related
-                wait_time = 5 if "Timeout" in error_msg else 2
-                logger.info(f"tweet_scraper - INFO - Waiting {wait_time} seconds before retry (error count: {self.error_count}/{self.max_errors})")
+                wait_time = 5 if "timeout errors" in error_msg else 2
+                logger.info(f"[PM2] Waiting {wait_time}s before retry (errors: {self.error_count}/{self.max_errors})")
                 await asyncio.sleep(wait_time)
 
     async def shutdown(self):

@@ -4,6 +4,7 @@ from pathlib import Path
 import asyncio
 from datetime import datetime
 from error_handler import with_retry, RetryConfig, log_error
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -123,30 +124,21 @@ class TweetScraper:
             if is_monitoring and column_id in self.last_scrape_time:
                 time_since_last = current_time - self.last_scrape_time[column_id]
                 if time_since_last < self.min_scrape_interval:
-                    # Too soon, skip this check
                     return []
             
-            # Update last scrape time
             self.last_scrape_time[column_id] = current_time
-            
-            # Get tweets with existing logic
             tweets = await self._get_column_tweets_internal(column_id, is_monitoring)
-            
-            # Reset error count on success
             self.error_count[column_id] = 0
-            
             return tweets
             
         except Exception as e:
             error_msg = str(e)
             if "Timeout" in error_msg and "ElementHandle.get_attribute" in error_msg:
-                logger.error(f"tweet_scraper - ERROR - Error getting tweets from column {column_id}: ElementHandle.get_attribute. Timeout 30000ms exceeded.")
-                logger.error("Call log:")
-                logger.error('    waiting for locator("scope")')
+                logger.error(f"Col {column_id}: Timeout exceeded")
             else:
-                logger.error(f"tweet_scraper - ERROR - Error getting tweets from column {column_id}: {error_msg}")
-            raise  # Still propagate up for main error handling
-            
+                logger.error(f"Col {column_id}: {error_msg}")
+            raise
+
     async def _get_column_tweets_internal(self, column_id, is_monitoring=False):
         """Internal method with the original get_column_tweets logic"""
         try:
@@ -158,7 +150,7 @@ class TweetScraper:
             index = int(column_id)
             columns = await self.page.query_selector_all('div[data-testid="multi-column-layout-column-content"]')
             if index >= len(columns):
-                logger.error(f"Column index {index} out of range")
+                logger.error(f"Col {index}: Out of range")
                 return []
                 
             column_element = columns[index]
@@ -167,29 +159,21 @@ class TweetScraper:
             max_attempts = 3
             tweets = []
             for attempt in range(max_attempts):
-                # First wait for the timeline to be present
                 timeline = await column_element.query_selector('div[data-testid="cellInnerDiv"]')
                 if timeline:
-                    # Wait a bit for tweets to fully load
                     await asyncio.sleep(1)
-                    # Get all tweets directly
                     tweets = await column_element.query_selector_all('article[data-testid="tweet"]')
                     if len(tweets) > 0:
                         break
                         
                 if attempt < max_attempts - 1 and not is_monitoring:
-                    logger.info(f"No tweets found in column {column['title']} on attempt {attempt + 1}, waiting...")
-                    await asyncio.sleep(2)  # Wait 2 seconds between attempts
-            
-            if not is_monitoring:
-                logger.info(f"Found {len(tweets)} tweets in column {column['title']}")
+                    await asyncio.sleep(2)
             
             # For monitoring, only process first tweet if we have latest ID
             if is_monitoring and self.latest_tweets.get(column_id) and len(tweets) > 0:
                 latest_id = self.latest_tweets[column_id]
                 first_tweet = tweets[0]
                 
-                # Get tweet ID
                 tweet_link = await first_tweet.query_selector('a[href*="/status/"]')
                 if not tweet_link:
                     return []
@@ -197,11 +181,9 @@ class TweetScraper:
                 href = await tweet_link.get_attribute('href')
                 tweet_id = href.split('/status/')[-1]
                 
-                # If ID matches latest, no new tweets
                 if tweet_id == latest_id:
                     return []
                     
-                # Only process first tweet during monitoring
                 tweets = [first_tweet]
                 
             tweet_data = []
@@ -278,70 +260,80 @@ class TweetScraper:
                             'column': column['title']
                         })
                 except Exception as e:
-                    logger.error(f"Error processing tweet in column {column_id}: {str(e)}")
+                    logger.error(f"Col {column_id}: Tweet processing error")
                     continue
             
-            if tweet_data and (not is_monitoring or len(tweet_data) > 0):
-                logger.info(f"Successfully processed {len(tweet_data)} new tweets from column {column['title']}")
             return tweet_data
             
         except Exception as e:
-            logger.error(f"Error getting tweets from column {column_id}: {str(e)}")
-            return [] 
+            logger.error(f"Col {column_id}: {str(e)}")
+            return []
 
     async def scrape_all_columns(self, is_monitoring=False):
         """Scrape all columns concurrently"""
         try:
-            # Create tasks for each column
             tasks = []
             for column_id in self.columns:
                 task = asyncio.create_task(self.get_column_tweets(column_id, is_monitoring))
                 tasks.append((column_id, task))
             
-            # Wait for all tasks to complete
             results = []
-            errors = []  # Track errors
+            timeout_errors = []
+            other_errors = []
+            has_activity = False
+            
             for column_id, task in tasks:
                 try:
                     tweets = await task
                     if tweets:
-                        # Update latest tweet ID
+                        if not has_activity:
+                            logger.info("[SCRAPE] New activity")
+                            has_activity = True
+                            
                         self.latest_tweets[column_id] = tweets[0]['id']
-                        
-                        # Save tweets to column file
                         column = self.columns[column_id]
+                        
                         if is_monitoring:
-                            # Load existing tweets for monitoring
                             existing_tweets = []
                             if column['file'].exists():
                                 with open(column['file'], 'r') as f:
                                     existing_tweets = json.load(f)
-                            # Add new tweets at the beginning
-                            existing_tweets = tweets + existing_tweets
-                            tweets_to_save = existing_tweets
+                            tweets_to_save = tweets + existing_tweets
                         else:
-                            # For initial scrape, just save the tweets
                             tweets_to_save = tweets
                             
-                        # Save to file
                         with open(column['file'], 'w') as f:
                             json.dump(tweets_to_save, f, indent=2)
                             
                         results.append((column_id, len(tweets)))
+                        logger.info(f"Col {column_id}: +{len(tweets)} tweets")
                 except Exception as e:
-                    errors.append(str(e))  # Collect errors
-                    logger.error(f"Error in column {column_id}: {str(e)}")
+                    if not has_activity:
+                        logger.info("[SCRAPE] Errors detected")
+                        has_activity = True
+                        
+                    error_msg = str(e)
+                    if "ElementHandle.get_attribute: Timeout" in error_msg:
+                        timeout_errors.append(column_id)
+                    else:
+                        other_errors.append(column_id)
             
-            # If all columns failed, propagate error
-            if len(errors) == len(self.columns):
-                raise Exception(f"All columns failed: {'; '.join(errors)}")
-                
-            # Save latest tweet IDs if any new tweets were found
+            # Handle errors
+            if timeout_errors or other_errors:
+                error_parts = []
+                if timeout_errors:
+                    error_parts.append(f"{len(timeout_errors)} timeout errors")
+                if other_errors:
+                    error_parts.append(f"{len(other_errors)} other errors")
+                error_msg = " and ".join(error_parts)
+                logger.error(f"[CRITICAL] {error_msg}")
+                raise Exception(error_msg)
+            
             if results:
                 self.save_latest_tweets()
                 
             return results
             
         except Exception as e:
-            logger.error(f"Error in concurrent scraping: {str(e)}")
-            raise  # Propagate error up 
+            logger.error(f"[CRITICAL] Scrape failed: {str(e)}")
+            raise
