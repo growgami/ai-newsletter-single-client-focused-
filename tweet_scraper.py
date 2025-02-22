@@ -315,19 +315,22 @@ class TweetScraper:
                     error_msg = str(e)
                     if "ElementHandle.get_attribute: Timeout" in error_msg:
                         timeout_errors.append(column_id)
+                        logger.error(f"Col {column_id}: Timeout exceeded")
                     else:
                         other_errors.append(column_id)
+                        logger.error(f"Col {column_id}: {error_msg}")
             
-            # Handle errors
+            # Handle errors - format message for error counting
             if timeout_errors or other_errors:
                 error_parts = []
                 if timeout_errors:
                     error_parts.append(f"{len(timeout_errors)} timeout errors")
+                    logger.error(f"[CRITICAL] {len(timeout_errors)} timeout errors in columns: {', '.join(timeout_errors)}")
                 if other_errors:
                     error_parts.append(f"{len(other_errors)} other errors")
+                    logger.error(f"[CRITICAL] {len(other_errors)} other errors in columns: {', '.join(other_errors)}")
                 error_msg = " and ".join(error_parts)
-                logger.error(f"[CRITICAL] {error_msg}")
-                raise Exception(error_msg)
+                raise Exception(error_msg)  # This format matches what collect_tweets expects
             
             if results:
                 self.save_latest_tweets()
