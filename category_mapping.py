@@ -13,21 +13,29 @@ load_dotenv()
 # - alpha_filter.py: For initial filtering
 # - telegram_sender.py: For message formatting
 # - tweet_summary.py: For output file counting
-CATEGORY: str = 'Polkadot'
+CATEGORY: str = 'Stablecoins'
+
+# Additional alpha signal considerations
+# Used in:
+# - alpha_filter.py: For enhancing alpha signal detection
+ALPHA_CONSIDERATIONS: List[str] = [
+    'Place importance on mentions of plasmaFDN',
+    'Look out for discussions on Tether, USDC, DAI, Binance USD, TUSD, and USDP'
+]
 
 # Channel ID mapping for Telegram
 # Used in:
 # - telegram_sender.py: For sending messages to configured channels
 TELEGRAM_CHANNELS: Dict[str, str] = {
     'GROWGAMI': os.getenv('TELEGRAM_GROWGAMI_CHANNEL_ID', ''),
-    'POLKADOT': os.getenv('TELEGRAM_POLKADOT_CHANNEL_ID', '')
+    'STABLECOINS': os.getenv('TELEGRAM_STABLECOINS_CHANNEL_ID', '')
 }
 
 # Keywords for category identification
 # Used in:
 # - kol_pump.py: For tweet categorization
 CATEGORY_KEYWORDS: List[str] = [
-    'polkadot'
+    'stablecoins'
 ]
 
 # Emoji mappings for subcategories
@@ -110,7 +118,7 @@ EMOJI_MAP: Dict[str, str] = {
     'DAOs': '🏛️',
     'Proposal': '📜',
     'Proposals': '📜',
-    'Vote': '🗳️',
+    'Vote': '��️',
     'Voting': '🗳️',
     'Votes': '🗳️',
     'Members': '👥',
