@@ -18,7 +18,8 @@ from alpha_filter import AlphaFilter
 from content_filter import ContentFilter
 from news_filter import NewsFilter
 from telegram_sender import TelegramSender
-from category_mapping import CATEGORY
+from discord_sender import DiscordSender
+from category_mapping import CATEGORY, DISCORD_WEBHOOKS
 
 # Setup logging with more detailed format
 logging.basicConfig(
@@ -36,7 +37,7 @@ sys.stdout.reconfigure(line_buffering=True)  # For Python 3.7+
 logger = logging.getLogger(__name__)
 
 # Ensure child loggers also log to stdout
-for name in ['data_processor', 'alpha_filter', 'content_filter', 'news_filter', 'telegram_sender']:
+for name in ['data_processor', 'alpha_filter', 'content_filter', 'news_filter', 'telegram_sender', 'discord_sender']:
     child_logger = logging.getLogger(name)
     child_logger.addHandler(logging.StreamHandler(sys.stdout))
     child_logger.propagate = True  # Ensure logs propagate to parent
@@ -76,6 +77,14 @@ class TweetSummary:
         logger.info("✓ News Filter initialized")
         self.telegram_sender = TelegramSender(config['telegram_token'])
         logger.info("✓ Telegram Sender initialized")
+        
+        # Initialize Discord sender if any webhooks are configured
+        self.discord_sender = None
+        if any(webhook for webhook in DISCORD_WEBHOOKS.values()):
+            self.discord_sender = DiscordSender()
+            logger.info("✓ Discord Sender initialized")
+        else:
+            logger.info("ℹ️ No Discord webhooks configured, Discord sending disabled")
         
         # Control flags
         self.is_running = True
@@ -261,15 +270,26 @@ class TweetSummary:
                         news_result = await self.news_filter.process_all()
                         
                         if news_result:
-                            logger.info("✅ News filter completed successfully, initiating Telegram send")
+                            logger.info("✅ News filter completed successfully, initiating message sending")
+                            
+                            # Send to Telegram
                             telegram_result = await self.telegram_sender.process_news_summary()
                             
-                            if telegram_result:
+                            # Send to Discord if configured
+                            discord_result = True  # Default to True if Discord not configured
+                            if self.discord_sender:
+                                discord_result = await self.discord_sender.process_news_summary()
+                                if discord_result:
+                                    logger.info("✅ Discord sending completed successfully")
+                                else:
+                                    logger.error("❌ Discord sending failed")
+                            
+                            if telegram_result and discord_result:
                                 await self._clear_input_file(content_file)
                                 self.content_filter.reset_state()  # Reset content filter state
-                                logger.info("✅ News processing and Telegram sending completed successfully")
+                                logger.info("✅ News processing and message sending completed successfully")
                             else:
-                                logger.error("❌ Telegram sending failed")
+                                logger.error("❌ Message sending failed")
                         else:
                             logger.error("❌ News filter failed")
                         
