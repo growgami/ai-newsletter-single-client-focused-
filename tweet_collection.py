@@ -45,7 +45,7 @@ class TweetCollector:
         
         # Error tracking
         self.error_count = 0
-        self.max_errors = 2  # Reset browser after 5 errors
+        self.max_errors = 3
         
         # Ensure directories exist
         self.setup_directories()
@@ -140,38 +140,37 @@ class TweetCollector:
         """Main tweet collection loop"""
         while self.is_running:
             try:
+                # Validate TweetDeck state before scraping
+                if not await self.validate_tweetdeck():
+                    logger.error("[CRITICAL] TweetDeck validation failed")
+                    if self.error_count >= self.max_errors:
+                        logger.critical(f"[CRITICAL] RESTARTING - Error threshold reached ({self.error_count}/{self.max_errors} errors)")
+                        await self.shutdown()
+                        os._exit(1)
+                    continue
+
                 # Single try block for all operations
                 results = await self.scraper.scrape_all_columns(is_monitoring=True)
-                # Reset count only on successful scrape
-                if results:
-                    self.error_count = 0
-                    logger.info("[PM2] Successful scrape - resetting error count to 0")
                     
             except Exception as e:
-                error_msg = str(e)
-                previous_count = self.error_count
-                
-                # Count errors from error message
-                if "timeout errors" in error_msg:
-                    timeout_count = int(error_msg.split()[0])
-                    self.error_count += timeout_count
-                    logger.error(f"[PM2] Error count increased from {previous_count} to {self.error_count} ({timeout_count} timeout errors)")
-                    
-                if "other errors" in error_msg:
-                    other_count = int(error_msg.split("and")[1].split()[0])
-                    self.error_count += other_count
-                    logger.error(f"[PM2] Error count increased from {previous_count} to {self.error_count} ({other_count} other errors)")
+                try:
+                    # Simple numeric error count
+                    self.error_count += int(str(e))
+                    logger.error(f"Error count increased to {self.error_count}")
+                except ValueError:
+                    # If not a number, count as one error
+                    self.error_count += 1
+                    logger.error(f"Unexpected error format, counting as one. Error count: {self.error_count}")
                 
                 # Check max errors - if reached, exit process
                 if self.error_count >= self.max_errors:
-                    logger.critical(f"[PM2] RESTARTING - Error threshold reached ({self.error_count}/{self.max_errors} errors)")
+                    logger.critical(f"[CRITICAL] RESTARTING - Error threshold reached ({self.error_count}/{self.max_errors} errors)")
                     await self.shutdown()
-                    logger.critical("[PM2] Shutdown complete, forcing restart...")
                     os._exit(1)  # Force exit to ensure PM2 restart
                     
                 # If not max errors yet, wait and retry
-                wait_time = 5 if "timeout errors" in error_msg else 2
-                logger.info(f"[PM2] Waiting {wait_time}s before retry (errors: {self.error_count}/{self.max_errors})")
+                wait_time = 5 if self.error_count > 1 else 2
+                logger.info(f"Waiting {wait_time}s before retry (errors: {self.error_count}/{self.max_errors})")
                 await asyncio.sleep(wait_time)
 
     async def shutdown(self):
