@@ -230,7 +230,7 @@ class TelegramSender:
             logger.error(f"Error getting emoji for {subcategory}: {str(e)}")
             return '📌'
 
-    async def format_category_summary(self, category: str, summary: dict) -> str:
+    async def format_category_summary(self, category: str, summary: dict, channel_username: str = None) -> str:
         """Format category summary into a Telegram message"""
         try:
             # Reset used emojis for new summary
@@ -299,6 +299,10 @@ class TelegramSender:
                     logger.error(f"DEBUG - Error in subcategory {subcategory}: {str(e)}")  # Temporary debug
                     continue
             
+            # Add footer with channel reference
+            if channel_username:
+                lines.append(f"\nFollow @{channel_username} for more updates")
+            
             final_text = "\n".join(lines)
             logger.error(f"DEBUG - Final text length: {len(final_text)}")  # Temporary debug
             return final_text
@@ -360,12 +364,6 @@ class TelegramSender:
             category = list(data.keys())[0]  # Get the single category
             logger.info(f"Processing summary for category: {category}")
             
-            # Format message once using the original category
-            formatted_text = await self.format_category_summary(category, data)
-            if not formatted_text:
-                logger.error(f"Failed to format summary for {category}")
-                return False
-            
             success = True
             # Send to each configured channel that has a channel ID
             for channel_name, channel_id in TELEGRAM_CHANNELS.items():
@@ -378,6 +376,20 @@ class TelegramSender:
                 # Validate channel ID format - allow negative IDs for channels
                 if not str(channel_id).replace('-', '').isdigit():
                     logger.warning(f"Invalid channel ID format for {channel_name}: {channel_id}, skipping...")
+                    continue
+                
+                # Get channel info to get username
+                try:
+                    chat = await self.bot.get_chat(chat_id=channel_id)
+                    channel_username = chat.username if chat.username else channel_name.lower()
+                except Exception as e:
+                    logger.warning(f"Could not get channel info: {str(e)}")
+                    channel_username = channel_name.lower()
+                
+                # Format message with channel-specific footer
+                formatted_text = await self.format_category_summary(category, data, channel_username)
+                if not formatted_text:
+                    logger.error(f"Failed to format summary for {category}")
                     continue
                 
                 # Send the formatted message

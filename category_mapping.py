@@ -31,6 +31,14 @@ TELEGRAM_CHANNELS: Dict[str, str] = {
     'STABLECOINS': os.getenv('TELEGRAM_STABLECOINS_CHANNEL_ID', '')
 }
 
+# Webhook mapping for Discord
+# Used in:
+# - discord_sender.py: For sending messages to configured channels
+DISCORD_WEBHOOKS: Dict[str, str] = {
+    'GROWGAMI': os.getenv('DISCORD_GROWGAMI_WEBHOOK', ''),
+    'STABLECOINS': os.getenv('DISCORD_STABLECOINS_WEBHOOK', '')
+}
+
 # Keywords for category identification
 # Used in:
 # - kol_pump.py: For tweet categorization
