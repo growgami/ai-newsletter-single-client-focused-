@@ -84,7 +84,7 @@ class TelegramSender:
                         date_str, rest = line.split(' - ', 1)
                         date_obj = datetime.strptime(date_str.strip(), '%Y%m%d')
                         formatted_date = date_obj.strftime('%B %d')
-                        formatted_header = f"{formatted_date} - {rest}"
+                        formatted_header = f"{formatted_date} - {rest.replace('Rollup', 'News Drop')}"
                         formatted_lines.append(f"<u><b><i>{html.escape(formatted_header)}</i></b></u>")
                     except ValueError as e:
                         log_error(logger, e, f"Failed to parse date: {date_str}")
@@ -257,7 +257,7 @@ class TelegramSender:
                 return ""
             
             # Build message with header using the original category key to preserve case
-            lines = [f"<u><b><i>{category_key} Rollup</i></b></u> ~\n"]
+            lines = [f"<u><b><i>{category_key} News Drop</i></b></u> ~\n"]
             
             # Add each subcategory and its tweets
             for subcategory, tweets in category_data.items():
