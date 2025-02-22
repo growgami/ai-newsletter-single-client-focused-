@@ -192,6 +192,74 @@ class NewsFilter:
 
         Return ONLY the JSON output with subcategorized tweets, no explanations."""
 
+    def _build_content_dedup_prompt(self, tweets):
+        """Build prompt for content-based deduplication"""
+        return f"""
+        Analyze these tweets and remove semantic duplicates where the attribution and content convey the same information.
+        Choose the most informative version when duplicates are found.
+
+        TWEETS TO DEDUPLICATE:
+        {json.dumps(tweets, indent=2)}
+
+        DEDUPLICATION RULES:
+        1. Compare attribution + content semantically
+        2. If multiple tweets convey the same core information, keep only the most informative one
+        3. Preserve exact field values - do not modify content
+        4. Keep all required fields: attribution, content, url
+
+        REQUIRED OUTPUT FORMAT:
+        {{
+            "tweets": [
+                {{
+                    "attribution": "original attribution",
+                    "content": "original content",
+                    "url": "original url"
+                }}
+            ]
+        }}
+
+        Return ONLY the JSON output with deduplicated tweets, no explanations."""
+
+    async def _content_based_dedup(self, tweets):
+        """Perform content-based deduplication using AI"""
+        try:
+            if not tweets:
+                return []
+
+            logger.info(f"Starting content-based deduplication on {len(tweets)} tweets")
+            
+            # Build and send prompt
+            dedup_prompt = self._build_content_dedup_prompt(tweets)
+            dedup_response = await self._api_request(dedup_prompt)
+            
+            if not dedup_response:
+                logger.error("No response from content deduplication request")
+                return tweets  # Fall back to original tweets
+                
+            # Parse response
+            result = json.loads(dedup_response)
+            
+            if not isinstance(result, dict) or 'tweets' not in result:
+                logger.error("Invalid content deduplication response format")
+                return tweets
+                
+            deduped_tweets = result['tweets']
+            
+            # Validate output
+            valid_deduped = []
+            for tweet in deduped_tweets:
+                if self._validate_tweet_fields(tweet):
+                    valid_deduped.append(tweet)
+                    
+            removed_count = len(tweets) - len(valid_deduped)
+            logger.info(f"Content-based deduplication removed {removed_count} similar tweets")
+            
+            return valid_deduped
+            
+        except Exception as e:
+            logger.error(f"Error in content-based deduplication: {str(e)}")
+            return tweets  # Fall back to original tweets on error
+
     async def process_content(self):
         """Process content from combined input file"""
         try:
@@ -226,19 +294,23 @@ class NewsFilter:
                 logger.error("No valid tweets found after field validation")
                 return False
 
-            # Deduplicate tweets by URL before API processing
+            # URL-based deduplication
             seen_urls = set()
-            unique_tweets = []
+            url_deduped_tweets = []
             for tweet in valid_tweets:
                 url = tweet.get('url')
                 if url and url not in seen_urls:
                     seen_urls.add(url)
-                    unique_tweets.append(tweet)
+                    url_deduped_tweets.append(tweet)
 
-            logger.info(f"Processing {len(unique_tweets)} unique tweets from {CATEGORY} (removed {len(valid_tweets) - len(unique_tweets)} duplicates)")
+            logger.info(f"URL deduplication: {len(valid_tweets)} → {len(url_deduped_tweets)} tweets")
 
-            # Generate subcategories with deduplicated tweets
-            subcategory_prompt = self._build_subcategory_prompt(unique_tweets, CATEGORY)
+            # Content-based deduplication
+            content_deduped_tweets = await self._content_based_dedup(url_deduped_tweets)
+            logger.info(f"Content deduplication: {len(url_deduped_tweets)} → {len(content_deduped_tweets)} tweets")
+
+            # Generate subcategories with fully deduplicated tweets
+            subcategory_prompt = self._build_subcategory_prompt(content_deduped_tweets, CATEGORY)
             subcategory_response = await self._api_request(subcategory_prompt)
 
             if not subcategory_response:
@@ -262,9 +334,10 @@ class NewsFilter:
 
             # Log results
             logger.info(f"📊 Processing Results for {CATEGORY}:")
-            logger.info(f"   • Input tweets: {len(valid_tweets)}")
-            logger.info(f"   • Unique tweets after deduplication: {len(unique_tweets)}")
-            logger.info(f"   • Categorized tweets: {categorized_tweets}")
+            logger.info(f"   • Initial tweets: {len(valid_tweets)}")
+            logger.info(f"   • After URL deduplication: {len(url_deduped_tweets)}")
+            logger.info(f"   • After content deduplication: {len(content_deduped_tweets)}")
+            logger.info(f"   • Final categorized tweets: {categorized_tweets}")
             logger.info(f"   • Subcategories created: {len(subcategories)}")
             for subcat, tweets in subcategories.items():
                 logger.info(f"     - {subcat}: {len(tweets)} tweets")
