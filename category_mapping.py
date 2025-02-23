@@ -13,14 +13,14 @@ load_dotenv()
 # - alpha_filter.py: For initial filtering
 # - telegram_sender.py: For message formatting
 # - tweet_summary.py: For output file counting
-CATEGORY: str = 'Stablecoins'
+CATEGORY: str = 'Polkadot'
 
 # Additional alpha signal considerations
 # Used in:
 # - alpha_filter.py: For enhancing alpha signal detection
 ALPHA_CONSIDERATIONS: List[str] = [
-    'Place importance on mentions of plasmaFDN',
-    'Look out for discussions on Tether, USDC, DAI, Binance USD, TUSD, and USDP'
+    'Place importance on discussions of Polkadot',
+    'Look out for mentions of Hydration, Substrate, and Kusama'
 ]
 
 # Channel ID mapping for Telegram
@@ -28,7 +28,7 @@ ALPHA_CONSIDERATIONS: List[str] = [
 # - telegram_sender.py: For sending messages to configured channels
 TELEGRAM_CHANNELS: Dict[str, str] = {
     'GROWGAMI': os.getenv('TELEGRAM_GROWGAMI_CHANNEL_ID', ''),
-    'STABLECOINS': os.getenv('TELEGRAM_STABLECOINS_CHANNEL_ID', '')
+    'CATEGORY': os.getenv('TELEGRAM_CATEGORY_CHANNEL_ID', '')
 }
 
 # Webhook mapping for Discord
@@ -36,14 +36,14 @@ TELEGRAM_CHANNELS: Dict[str, str] = {
 # - discord_sender.py: For sending messages to configured channels
 DISCORD_WEBHOOKS: Dict[str, str] = {
     'GROWGAMI': os.getenv('DISCORD_GROWGAMI_WEBHOOK', ''),
-    'STABLECOINS': os.getenv('DISCORD_STABLECOINS_WEBHOOK', '')
+    'CATEGORY': os.getenv('DISCORD_CATEGORY_WEBHOOK', '')
 }
 
 # Keywords for category identification
 # Used in:
 # - kol_pump.py: For tweet categorization
 CATEGORY_KEYWORDS: List[str] = [
-    'stablecoins'
+    CATEGORY.lower()
 ]
 
 # Emoji mappings for subcategories
