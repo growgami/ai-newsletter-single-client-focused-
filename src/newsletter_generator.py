@@ -26,7 +26,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - [%(levelname)s] - %(message)s',
     handlers=[
-        logging.FileHandler('logs/newsletter_generator.log'),
+        logging.FileHandler('logs/newsletter_generator.log', encoding='utf-8'),
         logging.StreamHandler(sys.stdout)  # Explicitly use sys.stdout
     ]
 )
