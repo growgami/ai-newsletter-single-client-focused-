@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import asyncio
 import random
-from error_handler import with_retry, BrowserError, log_error, RetryConfig
+from error_handler import BrowserError, log_error
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +15,6 @@ class BrowserAutomation:
         self.context = None
         self.page = None
         self.storage_state_path = Path("data/session/auth.json")
-        self.retry_config = RetryConfig(max_retries=3, base_delay=2.0, max_delay=30.0)
         
     async def human_type(self, element, text):
         """Type text with human-like delays"""
@@ -28,9 +27,8 @@ class BrowserAutomation:
         delay = random.uniform(min_seconds, max_seconds)
         await asyncio.sleep(delay)
         
-    @with_retry(RetryConfig(max_retries=3, base_delay=2.0, max_delay=30.0))
     async def init_browser(self):
-        """Initialize browser with retry logic"""
+        """Initialize browser"""
         try:
             playwright = await async_playwright().start()
             self.browser = await playwright.chromium.launch(
@@ -52,9 +50,8 @@ class BrowserAutomation:
             log_error(logger, e, "Failed to initialize browser")
             raise BrowserError(f"Browser initialization failed: {str(e)}")
 
-    @with_retry(RetryConfig(max_retries=3, base_delay=2.0, max_delay=30.0))
     async def restart_browser(self):
-        """Safely close and restart the browser with retry logic"""
+        """Safely close and restart the browser"""
         logger.info("Initiating browser restart sequence")
         try:
             # Store current session state before closing
@@ -97,9 +94,8 @@ class BrowserAutomation:
         except Exception:
             return False
             
-    @with_retry(RetryConfig(max_retries=3, base_delay=2.0, max_delay=30.0))
     async def handle_login(self):
-        """Handle Twitter login with retry logic"""
+        """Handle Twitter login"""
         try:
             # Navigate to Twitter
             await self.page.goto("https://pro.twitter.com")
@@ -125,21 +121,18 @@ class BrowserAutomation:
             await self.page.keyboard.press('Enter')
             logger.info("Entered username")
             
-            # Wait for either verification or password step
+            # Handle verification if needed
             await self.random_delay(2, 3)
             try:
-                # Check for the exact text from the verification screen
                 verification_text = "Enter your phone number or username"
                 verification_element = await self.page.get_by_text(verification_text, exact=True).is_visible(timeout=10000)
                 
                 if verification_element:
                     logger.info("Unusual activity screen detected")
-                    # Wait for the input field and click it first
                     verification_input = await self.page.wait_for_selector('input[name="text"]', timeout=10000)
                     await verification_input.click()
                     await self.random_delay(0.5, 1)
                     
-                    # Type the verification code instead of username
                     await self.human_type(verification_input, self.config['twitter_2fa'])
                     await self.random_delay(0.5, 1)
                     await self.page.keyboard.press('Enter')
@@ -223,9 +216,8 @@ class BrowserAutomation:
         except Exception as e:
             logger.error(f"Failed to store session: {str(e)}")
             
-    @with_retry(RetryConfig(max_retries=2, base_delay=1.0))
     async def close(self):
-        """Close browser resources gracefully with retry logic"""
+        """Close browser resources gracefully"""
         logger.info("Initiating browser shutdown sequence")
         try:
             # Store session before closing if we have an active context
@@ -271,5 +263,4 @@ class BrowserAutomation:
 
         except Exception as e:
             logger.error(f"Error during browser shutdown: {str(e)}")
-            # Don't raise, but return False to indicate failure
             return False 
