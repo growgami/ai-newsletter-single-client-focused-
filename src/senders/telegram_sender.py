@@ -28,7 +28,7 @@ logging.getLogger('httpx').setLevel(logging.WARNING)
 load_dotenv()
 
 # Import after loading environment variables
-from src.category_mapping import TELEGRAM_CHANNELS, EMOJI_MAP, CATEGORY
+from category_mapping import TELEGRAM_CHANNELS, EMOJI_MAP, CATEGORY
 
 class TelegramSender:
     def __init__(self, bot_token):
