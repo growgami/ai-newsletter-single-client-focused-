@@ -7,7 +7,7 @@ import asyncio
 import re
 from openai import AsyncOpenAI
 import signal
-from src.category_mapping import CATEGORY
+from category_mapping import CATEGORY
 
 logger = logging.getLogger(__name__)
 
