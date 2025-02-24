@@ -18,7 +18,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('logs/tweet_collection.log', encoding='utf-8'),
+        logging.FileHandler('logs/tweet_collector.log', encoding='utf-8'),
         logging.StreamHandler(sys.stdout)  # stdout for proper encoding
     ]
 )
