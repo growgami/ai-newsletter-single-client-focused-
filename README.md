@@ -76,8 +76,8 @@ Create a `.env` file:
 # Twitter/X Credentials
 TWITTER_USERNAME=your_username
 TWITTER_PASSWORD=your_password
-TWITTER_2FA=your_2fa_code
-TWEETDECK_URL=https://tweetdeck.twitter.com/
+TWITTER_VERIFICATION_CODE=your_2fa_code
+TWEETDECK_URL=your_tweetdeck_url
 
 # AI Integration
 DEEPSEEK_API_KEY=your_api_key
@@ -85,45 +85,56 @@ OPENAI_API_KEY=your_api_key
 
 # Telegram Configuration
 TELEGRAM_BOT_TOKEN=your_bot_token
-TELEGRAM_CHANNEL_ID=your_channel_id
+TELEGRAM_GROWGAMI_CHANNEL_ID=your_growgami_channel_id
+TELEGRAM_CATEGORY_CHANNEL_ID=your_category_channel_id
 
-# Processing Settings
-ALPHA_THRESHOLD=0.8
-RISK_THRESHOLD=0.4
+# Discord Configuration
+DISCORD_GROWGAMI_WEBHOOK=your_growgami_webhook
+DISCORD_CATEGORY_WEBHOOK=your_category_webhook
 
-# KOL Pump Configuration
+# Slack Integration
 SLACK_BOT_TOKEN=your_slack_bot_token
 SLACK_APP_TOKEN=your_slack_app_token
 APIFY_API_TOKEN=your_apify_token
+
+# Memory Management
+BROWSER_MEMORY_THRESHOLD=512    # MB before browser restart
+SWAP_THRESHOLD=60              # % before swap cleanup
+MEMORY_THRESHOLD=70            # % for normal cleanup
+CRITICAL_MEMORY_THRESHOLD=85   # % for aggressive cleanup
+CHECK_INTERVAL=900             # 15 minutes between checks
+MAX_DAYS_TO_KEEP=3            # Keep files for 3 days
+MAX_FILE_SIZE_MB=25           # Maximum file size
+
+# Processing Settings
+ALPHA_THRESHOLD=0.8           # Threshold for alpha content filtering
+RISK_THRESHOLD=0.4           # Threshold for risk assessment
 ```
 
 5. **Customize Categories**
-Edit `category_mapping.py` to configure your desired categories:
+Edit `src/category_mapping.py` to configure your category. You only need to modify these two sections:
 
 ```python
-# Primary category constant - Change this to your main category
-CATEGORY: str = 'YourCategory'  # e.g., 'Bitcoin', 'Ethereum', etc.
+# Primary category constant - MODIFY THIS
+CATEGORY: str = 'YourCategory'  # e.g., 'Polkadot', 'Bitcoin', etc.
 
-# Channel ID mapping - Add your Telegram channels
-TELEGRAM_CHANNELS: Dict[str, str] = {
-    'CHANNEL_NAME': os.getenv('TELEGRAM_CHANNEL_ID_ENV_VAR', ''),  # Add channel env var to .env
-    # Add more channels as needed
-}
-
-# Keywords for category identification
-CATEGORY_KEYWORDS: List[str] = [
-    'keyword1',
-    'keyword2',
-    # Add relevant keywords in lowercase
+# Additional alpha signal considerations - MODIFY THIS
+ALPHA_CONSIDERATIONS: List[str] = [
+    'Place importance on discussions of your category',
+    'Look out for specific technical terms'
 ]
+
+# The following configurations are pre-set and don't need modification:
+# - TELEGRAM_CHANNELS (uses values from .env)
+# - DISCORD_WEBHOOKS (uses values from .env)
+# - CATEGORY_KEYWORDS (auto-includes your category)
+# - EMOJI_MAP (predefined for all categories)
 ```
 
 Key configuration points:
-- `CATEGORY`: Main category for content filtering (e.g., 'Polkadot', 'Bitcoin')
-- `TELEGRAM_CHANNELS`: Map channel names to their Telegram IDs (add corresponding env vars)
-- `CATEGORY_FOCUS`: Define 8-10 focus areas for content relevance
-- `CATEGORY_KEYWORDS`: Keywords for identifying relevant content (lowercase)
-- `EMOJI_MAP`: Predefined emojis for different content types (no need to modify)
+- `CATEGORY`: Set your main category name (this affects all filtering)
+- `ALPHA_CONSIDERATIONS`: Define what's important for your category
+- All other configurations are pre-set and will work automatically
 
 6. **Configure Slack App**
 
@@ -204,9 +215,9 @@ Important Notes:
 
 The service uses PM2 for process management and consists of three main processes:
 
-1. **tweet_collection**: Handles browser automation and tweet collection
-2. **tweet_summary**: Processes tweets and sends updates
-3. **kol_pump**: Manages Slack integration and KOL content processing
+1. **tweet_collector**: Handles browser automation and tweet collection
+2. **newsletter_generator**: Processes tweets and generates newsletters
+3. **slack_pump**: Manages Slack integration and KOL content processing
 
 ### Starting the Service
 
@@ -215,9 +226,9 @@ The service uses PM2 for process management and consists of three main processes
 pm2 start ecosystem.config.js
 
 # Start individual processes
-pm2 start ecosystem.config.js --only tweet_collection
-pm2 start ecosystem.config.js --only tweet_summary
-pm2 start ecosystem.config.js --only kol_pump
+pm2 start ecosystem.config.js --only tweet_collector
+pm2 start ecosystem.config.js --only newsletter_generator
+pm2 start ecosystem.config.js --only slack_pump
 
 # Save process list
 pm2 save
@@ -233,14 +244,14 @@ pm2 startup
 pm2 monit
 
 # View logs
-pm2 logs tweet_collection
-pm2 logs tweet_summary
-pm2 logs kol_pump
+pm2 logs tweet_collector
+pm2 logs newsletter_generator
+pm2 logs slack_pump
 
 # Restart processes
-pm2 restart tweet_collection
-pm2 restart tweet_summary
-pm2 restart kol_pump
+pm2 restart tweet_collector
+pm2 restart newsletter_generator
+pm2 restart slack_pump
 
 # List all processes
 pm2 list
@@ -251,30 +262,43 @@ pm2 list
 ```
 ai-newsletter/
 ├── ecosystem.config.js     # PM2 process configuration
-├── tweet_collection.py     # Tweet collection orchestration
-├── tweet_summary.py        # Processing orchestration
-├── kol_pump.py            # Slack bot integration
-├── browser_automation.py   # Playwright browser automation
-├── tweet_scraper.py        # Tweet collection logic
-├── data_processor.py       # Raw data processing
-├── alpha_filter.py         # Initial content filtering
-├── content_filter.py       # Content relevance filtering
-├── news_filter.py          # News categorization
-├── telegram_sender.py      # Message formatting and sending
-├── category_mapping.py     # Category configuration
-├── error_handler.py        # Error handling utilities
-├── data/
-│   ├── raw/               # Raw tweet data
-│   ├── processed/         # Processed tweets
-│   ├── filtered/          # Filtered content
-│   │   ├── alpha_filtered/    # Alpha filter output
-│   │   ├── content_filtered/  # Content filter output
-│   │   └── news_filtered/     # News filter output
-│   └── session/           # Browser session data
-└── logs/                  # Application logs
-    ├── tweet_collection.log
-    ├── tweet_summary.log
-    └── kol_pump.log
+├── src/
+│   ├── __init__.py        # Python package marker
+│   ├── tweet_collector.py  # Tweet collection orchestration
+│   ├── newsletter_generator.py  # Newsletter generation orchestration
+│   ├── slack_pump.py      # Slack bot integration
+│   ├── core/
+│   │   ├── __init__.py
+│   │   ├── browser_automation.py  # Playwright browser automation
+│   │   └── deck_scraper.py       # Tweet collection logic
+│   ├── processors/
+│   │   ├── __init__.py
+│   │   ├── data_processor.py    # Raw data processing
+│   │   ├── alpha_filter.py      # Initial content filtering
+│   │   ├── content_filter.py    # Content relevance filtering
+│   │   └── news_filter.py       # News categorization
+│   ├── senders/
+│   │   ├── __init__.py
+│   │   ├── telegram_sender.py   # Telegram message sending
+│   │   └── discord_sender.py    # Discord message sending
+│   ├── utils/
+│   │   ├── __init__.py
+│   │   ├── error_handler.py     # Error handling utilities
+│   │   └── garbage_collector.py # Memory management
+│   ├── category_mapping.py  # Category configuration
+│   ├── data/
+│   │   ├── raw/               # Raw tweet data
+│   │   ├── processed/         # Processed tweets
+│   │   ├── filtered/          # Filtered content
+│   │   │   ├── alpha_filtered/    # Alpha filter output
+│   │   │   ├── content_filtered/  # Content filter output
+│   │   │   └── news_filtered/     # News filter output
+│   │   └── session/           # Browser session data
+│   └── logs/                  # Application logs
+│       ├── tweet_collector.log
+│       ├── newsletter_generator.log
+│       └── slack_pump.log
+└── requirements.txt      # Python dependencies
 ```
 
 ## 🔍 Troubleshooting
@@ -282,19 +306,20 @@ ai-newsletter/
 Common issues and solutions:
 
 1. **Browser Automation Issues**
-   - Check browser session in data/session/
+   - Check browser session in src/data/session/
    - Verify Twitter credentials
-   - Review tweet_collection.log
+   - Review tweet_collector.log
+   - Check if browser process is properly terminated
 
 2. **Processing Issues**
-   - Check tweet_summary.log
+   - Check newsletter_generator.log
    - Verify API keys (DeepSeek and OpenAI)
    - Monitor memory usage with `pm2 monit`
-   - Check state.json files in filtered directories
+   - Check filtered data in src/data/filtered/
 
-3. **KOL Pump Issues**
+3. **Slack Pump Issues**
    - Verify Slack bot and app tokens
-   - Check kol_pump.log for errors
+   - Check slack_pump.log for errors
    - Ensure Apify API token is valid
    - Monitor Slack bot connection status
 
@@ -302,6 +327,15 @@ Common issues and solutions:
    - Use `pm2 logs` to check for errors
    - Monitor process restarts with `pm2 list`
    - Check system resources with `top` or `htop`
+   - Review PM2 error logs in src/logs/
+
+5. **PM2 Process Configuration**
+   - All processes run with `python3` interpreter
+   - Processes auto-restart on exit codes [0, 1]
+   - 30-second minimum uptime requirement
+   - 10-second kill timeout for clean shutdown
+   - Exponential backoff for restart delays
+   - Maximum 10 restarts before requiring manual intervention
 
 ## 📄 License
 
