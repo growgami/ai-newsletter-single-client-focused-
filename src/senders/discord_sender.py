@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # Import after loading environment variables
-from src.category_mapping import CATEGORY, EMOJI_MAP, DISCORD_WEBHOOKS
+from category_mapping import CATEGORY, EMOJI_MAP, DISCORD_WEBHOOKS
 
 # Discord webhook mapping (similar to TELEGRAM_CHANNELS)
 DISCORD_WEBHOOKS = {
