@@ -27,9 +27,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class KOLPump:
+class SLACKPump:
     def __init__(self, config):
-        """Initialize KOLPump with configuration"""
+        """Initialize SLACKPump with configuration"""
         if not all(key in config for key in ['slack_bot_token', 'slack_app_token', 'apify_api_token']):
             raise ValueError("Missing required configuration keys")
             
@@ -332,13 +332,13 @@ if __name__ == "__main__":
         'openai_api_key': os.getenv('OPENAI_API_KEY')
     }
     
-    # Create and run KOLPump
+    # Create and run SLACKPump
     try:
-        kol_pump = KOLPump(config)
-        asyncio.run(kol_pump.start())
+        slack_pump = SLACKPump(config)
+        asyncio.run(slack_pump.start())
     except KeyboardInterrupt:
         logger.info("Shutting down bot...")
-        asyncio.run(kol_pump.stop())
+        asyncio.run(slack_pump.stop())
     except Exception as e:
         logger.error(f"Bot error: {str(e)}")
         sys.exit(1)
