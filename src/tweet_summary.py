@@ -13,12 +13,12 @@ from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
 import zoneinfo
 
-from data_processor import DataProcessor
-from alpha_filter import AlphaFilter
-from content_filter import ContentFilter
-from news_filter import NewsFilter
-from telegram_sender import TelegramSender
-from discord_sender import DiscordSender
+from processors.data_processor import DataProcessor
+from processors.alpha_filter import AlphaFilter
+from processors.content_filter import ContentFilter
+from processors.news_filter import NewsFilter
+from senders.telegram_sender import TelegramSender
+from senders.discord_sender import DiscordSender
 from category_mapping import CATEGORY, DISCORD_WEBHOOKS
 
 # Setup logging with more detailed format

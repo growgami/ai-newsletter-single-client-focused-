@@ -7,8 +7,11 @@ import sys
 import logging
 from pathlib import Path
 from dotenv import load_dotenv
-from browser_automation import BrowserAutomation
-from deck_scraper import DeckScraper, ScrapingError
+from core.browser_automation import BrowserAutomation
+from core.deck_scraper import DeckScraper, ScrapingError
+
+# Create necessary directories first
+Path('logs').mkdir(parents=True, exist_ok=True)
 
 # Setup logging with UTF-8 encoding for Windows compatibility
 logging.basicConfig(

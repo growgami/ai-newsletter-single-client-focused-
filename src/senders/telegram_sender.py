@@ -1,17 +1,17 @@
-"""Discord message formatting and sending service"""
+"""Telegram message formatting and sending service"""
 
 import logging
 import html
-import aiohttp
+import telegram
+from telegram import Bot
+from telegram.constants import ParseMode
 import asyncio
 import os
 from pathlib import Path
 import json
 from datetime import datetime
 import sys
-from error_handler import RetryConfig, with_retry, log_error, DataProcessingError
-import time
-import zoneinfo
+from utils.error_handler import RetryConfig, with_retry, TelegramError, log_error, DataProcessingError
 from dotenv import load_dotenv
 
 # Setup logging
@@ -21,20 +21,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Reduce httpx logging
+logging.getLogger('httpx').setLevel(logging.WARNING)
+
 # Load environment variables before importing category_mapping
 load_dotenv()
 
 # Import after loading environment variables
-from category_mapping import CATEGORY, EMOJI_MAP, DISCORD_WEBHOOKS
+from src.category_mapping import TELEGRAM_CHANNELS, EMOJI_MAP, CATEGORY
 
-# Discord webhook mapping (similar to TELEGRAM_CHANNELS)
-DISCORD_WEBHOOKS = {
-    'GROWGAMI': os.getenv('DISCORD_GROWGAMI_WEBHOOK'),
-    'STABLECOINS': os.getenv('DISCORD_STABLECOINS_WEBHOOK')
-}
-
-class DiscordSender:
-    def __init__(self):
+class TelegramSender:
+    def __init__(self, bot_token):
+        if not bot_token:
+            raise ValueError("Bot token is required")
+            
+        self.bot = Bot(token=bot_token)
+        self.used_emojis = set()  # Track used emojis per summary
+        
         # Initialize data directories
         self.data_dir = Path('data')
         self.input_dir = self.data_dir / 'filtered' / 'news_filtered'  # Input from news_filter
@@ -42,23 +45,24 @@ class DiscordSender:
         # Create directories if they don't exist
         self.input_dir.mkdir(parents=True, exist_ok=True)
         
-        # Track used emojis per summary
-        self.used_emojis = set()
-        
-        # Debug: Print webhook URLs
+        # Debug: Print environment variables and channel IDs
         logger.error(f"DEBUG - Environment Variables:")
-        for name, webhook in DISCORD_WEBHOOKS.items():
-            logger.error(f"Webhook {name}: URL exists = {bool(webhook)}")
+        for name, channel_id in TELEGRAM_CHANNELS.items():
+            logger.error(f"Channel {name}: ID = '{channel_id}' (type: {type(channel_id)})")
 
     def _reset_used_emojis(self):
         """Reset the used emojis tracking set"""
         self.used_emojis.clear()
 
     async def format_text(self, text):
-        """Format text with Discord markdown"""
+        """Format text with HTML tags according to instructions"""
         if not text:
             logger.warning("Received empty text to format")
             return ""
+            
+        # Skip if text is already formatted (contains HTML tags)
+        if any(tag in text for tag in ['<u>', '<b>', '<i>', '<a href']):
+            return text
             
         try:
             lines = text.split('\n')
@@ -78,10 +82,11 @@ class DiscordSender:
                         date_obj = datetime.strptime(date_str.strip(), '%Y%m%d')
                         formatted_date = date_obj.strftime('%B %d')
                         formatted_header = f"{formatted_date} - {rest.replace('Rollup', 'News Drop')}"
-                        formatted_lines.append(f"__**{formatted_header}**__")
+                        formatted_lines.append(f"<u><b><i>{html.escape(formatted_header)}</i></b></u>")
                     except ValueError as e:
                         log_error(logger, e, f"Failed to parse date: {date_str}")
-                        formatted_lines.append(f"__**{line}**__")
+                        # Fallback to original format if date conversion fails
+                        formatted_lines.append(f"<u><b><i>{html.escape(line)}</i></b></u>")
                     i += 1
                     continue
                     
@@ -89,14 +94,15 @@ class DiscordSender:
                 if not ':' in line and not line.startswith('http'):
                     if formatted_lines:
                         formatted_lines.append('')
-                    formatted_lines.append(f"__**{line}**__")
+                    formatted_lines.append(f"<u><b>{html.escape(line)}</b></u>")
                     i += 1
                     continue
                     
-                # Format tweet lines with URL
+                # Format tweet lines with URL on next line
                 if not line.startswith('http'):
                     try:
-                        formatted_lines.append(line)
+                        # Add line as is since formatting is handled in format_category_summary
+                        formatted_lines.append(html.escape(line))
                         i += 1
                     except Exception as e:
                         log_error(logger, e, f"Failed to format tweet line: {line}")
@@ -104,26 +110,30 @@ class DiscordSender:
                         i += 1
                     continue
                     
-                # Keep URLs as is
+                # Keep URLs as is but prevent auto-embedding
                 if line.startswith('http'):
-                    formatted_lines.append(line)
+                    formatted_lines.append(line.replace('https:', 'https:\u200B'))
                     i += 1
                     continue
                     
                 # Default case - keep line as is
-                formatted_lines.append(line)
+                formatted_lines.append(html.escape(line))
                 i += 1
                 
             return '\n'.join(formatted_lines)
             
         except Exception as e:
             log_error(logger, e, "Failed to format text")
-            raise DataProcessingError(f"Text formatting failed: {str(e)}")
+            raise TelegramError(f"Text formatting failed: {str(e)}")
 
     @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
-    async def send_message(self, webhook_url: str, text: str) -> bool:
-        """Send a message to a Discord channel via webhook"""
-        if not text or not webhook_url:
+    async def send_message(self, channel_id: str, text: str) -> bool:
+        """Send a message to a Telegram channel with retry logic"""
+        if not text:
+            return False
+            
+        if not channel_id:
+            logger.error("No channel ID provided")
             return False
             
         try:
@@ -132,68 +142,57 @@ class DiscordSender:
                 logger.error("Empty formatted text")
                 return False
                 
-            # Split message if too long for Discord (2000 char limit)
-            chunks = self._split_message(formatted_text)
-            
-            async with aiohttp.ClientSession() as session:
-                for chunk in chunks:
-                    payload = {'content': chunk}
-                    async with session.post(webhook_url, json=payload) as response:
-                        if response.status not in (200, 204):
-                            error_text = await response.text()
-                            logger.error(f"Discord API error: {response.status} - {error_text}")
-                            return False
-                        # Rate limit handling
-                        if response.status == 429:
-                            retry_after = float(response.headers.get('Retry-After', 1))
-                            await asyncio.sleep(retry_after)
-                            return await self.send_message(webhook_url, text)
-                            
+            await self.bot.send_message(
+                chat_id=channel_id,
+                text=formatted_text,
+                parse_mode='HTML',
+                disable_web_page_preview=True
+            )
             return True
             
-        except aiohttp.ClientError as e:
-            logger.error(f"Discord webhook error: {str(e)}")
-            raise DataProcessingError(f"Failed to send message: {str(e)}")
+        except telegram.error.TimedOut:
+            logger.warning(f"Timeout sending message to channel {channel_id[:8]}... (Retrying)")
+            raise TelegramError("Connection timed out")
+        except telegram.error.RetryAfter as e:
+            logger.warning(f"Rate limit hit, retry after {e.retry_after}s")
+            await asyncio.sleep(e.retry_after)
+            raise TelegramError(f"Rate limited, retry after {e.retry_after}s")
+        except telegram.error.TelegramError as e:
+            logger.error(f"Telegram API error: {str(e)}")
+            raise TelegramError(f"Telegram API error: {str(e)}")
         except Exception as e:
             logger.error(f"Unexpected error sending message: {str(e)}")
-            raise DataProcessingError(f"Failed to send message: {str(e)}")
+            raise TelegramError(f"Failed to send message: {str(e)}")
 
-    def _split_message(self, text: str, limit: int = 2000) -> list:
-        """Split message into chunks that fit Discord's limit, splitting by subcategories"""
-        if len(text) <= limit:
-            return [text]
+    async def process_category(self, category: str, content: dict):
+        """Process and send a category summary to Telegram"""
+        try:
+            channel_id = TELEGRAM_CHANNELS[category]
+            if not await self._validate_channel(channel_id):
+                logger.error(f"Skipping invalid channel: {channel_id}")
+                return False
             
-        lines = text.split('\n')
-        chunks = []
+            formatted_text = await self.format_text(content['content'])
+            if not formatted_text:
+                logger.error(f"Empty content for {category}")
+                return False
+            
+            return await self.send_message(channel_id, formatted_text)
         
-        # First chunk is just the header
-        header = lines[0]
-        chunks.append(header)
-        
-        # Process remaining lines by subcategory
-        current_chunk = []
-        current_length = 0
-        
-        for line in lines[1:]:  # Skip header
-            line_length = len(line) + 1  # +1 for newline
-            
-            # If this is a subcategory header
-            if line.startswith('__**'):
-                # If we have content and adding this subcategory would exceed limit
-                if current_chunk and current_length + line_length > limit:
-                    chunks.append('\n'.join(current_chunk))
-                    current_chunk = []
-                    current_length = 0
-                
-            # Add line to current chunk
-            current_chunk.append(line)
-            current_length += line_length
-            
-        # Add any remaining content
-        if current_chunk:
-            chunks.append('\n'.join(current_chunk))
-            
-        return chunks
+        except KeyError as e:
+            logger.error(f"Category {category} not found in channel map")
+            return False
+        except Exception as e:
+            log_error(logger, e, f"Error processing {category}")
+            return False
+
+    async def _validate_channel(self, channel_id: str) -> bool:
+        try:
+            chat = await self.bot.get_chat(chat_id=channel_id)
+            return chat.type in ["channel", "supergroup"]
+        except telegram.error.BadRequest:
+            logger.error(f"Invalid channel ID: {channel_id}")
+            return False
 
     def _get_emoji_for_subcategory(self, subcategory: str) -> str:
         """Get unique emoji for subcategory by matching individual words"""
@@ -228,8 +227,8 @@ class DiscordSender:
             logger.error(f"Error getting emoji for {subcategory}: {str(e)}")
             return '📌'
 
-    async def format_category_summary(self, category: str, summary: dict) -> str:
-        """Format category summary into a Discord message"""
+    async def format_category_summary(self, category: str, summary: dict, channel_username: str = None) -> str:
+        """Format category summary into a Telegram message"""
         try:
             # Reset used emojis for new summary
             self._reset_used_emojis()
@@ -241,31 +240,35 @@ class DiscordSender:
                     category_key = key
                     break
                     
+            logger.error(f"DEBUG - category_key: {category_key}, summary keys: {list(summary.keys())}")  # Temporary debug
+            
             if not summary or not category_key:
                 logger.error(f"Invalid summary format for {category}")
                 return ""
             
             category_data = summary[category_key]
+            logger.error(f"DEBUG - subcategories: {list(category_data.keys())}")  # Temporary debug
             
             if not isinstance(category_data, dict):
                 logger.error(f"Invalid category data format for {category}")
                 return ""
             
             # Build message with header using the original category key to preserve case
-            lines = [f"__**{category_key} News Drop**__ ~\n"]
+            lines = [f"<u><b><i>{category_key} News Drop</i></b></u> ~\n"]
             
             # Add each subcategory and its tweets
             for subcategory, tweets in category_data.items():
                 try:
                     # Add newline before each subcategory (except the first one)
-                    if len(lines) > 1:
-                        lines.append("")
+                    if len(lines) > 1:  # If not first subcategory
+                        lines.append("")  # Add newline before subcategory
                     
                     # Get unique emoji for subcategory
                     emoji = self._get_emoji_for_subcategory(subcategory)
+                    logger.error(f"DEBUG - Processing {subcategory} with {len(tweets)} tweets")  # Temporary debug
                     
                     # Add subcategory header with emoji
-                    subcategory_text = f"__**{subcategory}**__"
+                    subcategory_text = f"<u><b>{subcategory}</b></u>"
                     if emoji:
                         subcategory_text += f" {emoji}"
                     lines.append(subcategory_text)
@@ -285,17 +288,24 @@ class DiscordSender:
                     # Add tweets for each attribution
                     for attribution, tweet_list in attribution_tweets.items():
                         for content, url in tweet_list:
-                            # Format as: "- **Attribution** content [link]"
-                            formatted_line = f"- **{attribution}** {content} {url}"
+                            # Format as: "- <b>Attribution</b> <a href='url'>content</a>"
+                            formatted_line = f"- <b>{html.escape(attribution)}</b> <a href='{url}'>{html.escape(content)}</a>"
                             lines.append(formatted_line)
                     
                 except Exception as e:
-                    logger.error(f"Error in subcategory {subcategory}: {str(e)}")
+                    logger.error(f"DEBUG - Error in subcategory {subcategory}: {str(e)}")  # Temporary debug
                     continue
             
-            return '\n'.join(lines)
+            # Add footer with channel reference
+            if channel_username:
+                lines.append(f"\nFollow @{channel_username} for more updates")
+            
+            final_text = "\n".join(lines)
+            logger.error(f"DEBUG - Final text length: {len(final_text)}")  # Temporary debug
+            return final_text
             
         except Exception as e:
+            logger.error(f"DEBUG - Top level error: {str(e)}")  # Temporary debug
             log_error(logger, e, f"Failed to format {category} summary")
             return ""
 
@@ -329,7 +339,7 @@ class DiscordSender:
         return file_path if file_path.exists() else None
 
     async def process_news_summary(self, date_str=None):
-        """Process news summary file and send to all configured webhooks"""
+        """Process news summary file and send to all configured channels"""
         try:
             # Get and validate input file
             input_file = self._get_input_file(date_str)
@@ -351,26 +361,39 @@ class DiscordSender:
             category = list(data.keys())[0]  # Get the single category
             logger.info(f"Processing summary for category: {category}")
             
-            # Format message once using the original category
-            formatted_text = await self.format_category_summary(category, data)
-            if not formatted_text:
-                logger.error(f"Failed to format summary for {category}")
-                return False
-            
             success = True
-            # Send to each configured webhook
-            for channel_name, webhook_url in DISCORD_WEBHOOKS.items():
-                if not webhook_url:
-                    logger.warning(f"No webhook URL configured for {channel_name}, skipping...")
+            # Send to each configured channel that has a channel ID
+            for channel_name, channel_id in TELEGRAM_CHANNELS.items():
+                if not channel_id:
+                    logger.warning(f"No channel ID configured for {channel_name}, skipping...")
                     continue
                 
-                logger.info(f"Sending to Discord channel {channel_name}")
+                logger.info(f"Sending to channel {channel_name} with ID: {channel_id}")
+                
+                # Validate channel ID format - allow negative IDs for channels
+                if not str(channel_id).replace('-', '').isdigit():
+                    logger.warning(f"Invalid channel ID format for {channel_name}: {channel_id}, skipping...")
+                    continue
+                
+                # Get channel info to get username
+                try:
+                    chat = await self.bot.get_chat(chat_id=channel_id)
+                    channel_username = chat.username if chat.username else channel_name.lower()
+                except Exception as e:
+                    logger.warning(f"Could not get channel info: {str(e)}")
+                    channel_username = channel_name.lower()
+                
+                # Format message with channel-specific footer
+                formatted_text = await self.format_category_summary(category, data, channel_username)
+                if not formatted_text:
+                    logger.error(f"Failed to format summary for {category}")
+                    continue
                 
                 # Send the formatted message
-                if await self.send_message(webhook_url, formatted_text):
-                    logger.info(f"✅ Successfully sent summary to {channel_name} Discord channel")
+                if await self.send_message(channel_id, formatted_text):
+                    logger.info(f"✅ Successfully sent summary to {channel_name} channel")
                 else:
-                    logger.error(f"Failed to send summary to {channel_name} Discord channel")
+                    logger.error(f"Failed to send summary to {channel_name} channel")
                     success = False
                 
                 # Brief pause between sends
@@ -441,10 +464,40 @@ async def load_json_file(file_path):
         log_error(logger, e, f"Failed to load JSON file: {file_path}")
         raise DataProcessingError(f"Failed to load JSON file: {str(e)}")
 
-if __name__ == "__main__":
+@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+async def process_category(sender, category, content, channel_id):
+    """Process and send a category summary with retry"""
     try:
-        # Initialize sender
-        sender = DiscordSender()
+        if not isinstance(content, dict) or 'content' not in content:
+            logger.error(f"Invalid content structure for {category}")
+            return False
+            
+        raw_content = content['content']
+        if not raw_content:
+            logger.error(f"Empty content for {category}")
+            return False
+            
+        formatted_content = await sender.format_text(raw_content)
+        if not formatted_content:
+            logger.error(f"Empty formatted content for {category}")
+            return False
+            
+        return await sender.send_message(channel_id=channel_id, text=formatted_content)
+        
+    except Exception as e:
+        log_error(logger, e, f"Failed to process category: {category}")
+        raise DataProcessingError(f"Failed to process category: {str(e)}")
+
+if __name__ == "__main__":
+    load_dotenv()
+    
+    try:
+        # Initialize sender with bot token
+        bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
+        if not bot_token:
+            raise ValueError("TELEGRAM_BOT_TOKEN not found in environment")
+            
+        sender = TelegramSender(bot_token)
         
         # Get date from command line argument if provided
         date_str = sys.argv[1] if len(sys.argv) > 1 else None

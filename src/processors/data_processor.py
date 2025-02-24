@@ -5,7 +5,7 @@ import re
 import asyncio
 from datetime import datetime, timedelta
 import zoneinfo
-from error_handler import with_retry, DataProcessingError, log_error, RetryConfig
+from utils.error_handler import with_retry, DataProcessingError, log_error, RetryConfig
 
 logger = logging.getLogger(__name__)
 

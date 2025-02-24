@@ -6,7 +6,6 @@ from pathlib import Path
 from datetime import datetime, timezone
 import asyncio
 from openai import AsyncOpenAI
-from collections import defaultdict
 from category_mapping import CATEGORY
 import sys
 

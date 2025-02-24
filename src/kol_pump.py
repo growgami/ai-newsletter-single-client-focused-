@@ -16,10 +16,9 @@ from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from apify_client import ApifyClient
 from dotenv import load_dotenv
 
-from alpha_filter import AlphaFilter
-from error_handler import with_retry, APIError, log_error, RetryConfig
+from utils.error_handler import with_retry, APIError, RetryConfig
 from category_mapping import CATEGORY, CATEGORY_KEYWORDS
-from content_filter import ContentFilter
+from processors.content_filter import ContentFilter
 
 # Setup logging
 logging.basicConfig(

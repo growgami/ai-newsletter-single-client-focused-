@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import asyncio
 import random
-from error_handler import BrowserError, log_error
+from utils.error_handler import BrowserError, log_error
 
 logger = logging.getLogger(__name__)
 

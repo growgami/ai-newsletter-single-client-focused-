@@ -1,3 +1,4 @@
+'''
 import logging
 import json
 from pathlib import Path
@@ -344,3 +345,4 @@ class ScrapingError(Exception):
     def __init__(self, error_details):
         self.error_details = error_details
         super().__init__(str(error_details['total_errors']))
+'''

@@ -4,11 +4,10 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import zoneinfo
 import asyncio
-import aiohttp
 import re
 from openai import AsyncOpenAI
 import signal
-from category_mapping import CATEGORY
+from src.category_mapping import CATEGORY
 
 logger = logging.getLogger(__name__)
 

@@ -1,3 +1,4 @@
+'''
 """Tweet collection process for continuous background scraping"""
 
 import os
@@ -249,3 +250,4 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Unexpected error at process root: {str(e)}")
         sys.exit(1)
+'''

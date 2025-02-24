@@ -6,8 +6,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import zoneinfo
 import asyncio
-from openai import OpenAI, AsyncOpenAI
-from error_handler import with_retry, APIError, log_error, RetryConfig
+from openai import AsyncOpenAI
 from category_mapping import CATEGORY, ALPHA_CONSIDERATIONS
 
 logger = logging.getLogger(__name__)
