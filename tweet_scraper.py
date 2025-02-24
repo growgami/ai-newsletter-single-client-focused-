@@ -32,7 +32,7 @@ class TweetScraper:
         
         # Rate limiting and error handling
         self.last_scrape_time = {}  # Track last scrape time per column
-        self.error_count = {}       # Track consecutive errors per column
+        self.total_errors = 0       # Track total errors across all columns
         self.min_scrape_interval = 0.1  # Minimum time between scrapes (100ms)
         self.max_backoff = 5.0      # Maximum backoff time in seconds
         
@@ -128,15 +128,10 @@ class TweetScraper:
             
             self.last_scrape_time[column_id] = current_time
             tweets = await self._get_column_tweets_internal(column_id, is_monitoring)
-            self.error_count[column_id] = 0
             return tweets
             
         except Exception as e:
-            error_msg = str(e)
-            if "Timeout" in error_msg and "ElementHandle.get_attribute" in error_msg:
-                logger.error(f"Col {column_id}: Timeout exceeded")
-            else:
-                logger.error(f"Col {column_id}: {error_msg}")
+            # Let the retry decorator handle retries, but propagate the final error
             raise
 
     async def _get_column_tweets_internal(self, column_id, is_monitoring=False):
@@ -278,8 +273,7 @@ class TweetScraper:
                 tasks.append((column_id, task))
             
             results = []
-            timeout_errors = []
-            other_errors = []
+            failed_columns = []
             has_activity = False
             
             for column_id, task in tasks:
@@ -311,29 +305,42 @@ class TweetScraper:
                     if not has_activity:
                         logger.info("[SCRAPE] Errors detected")
                         has_activity = True
-                        
+                    
+                    failed_columns.append(column_id)
                     error_msg = str(e)
                     if "ElementHandle.get_attribute: Timeout" in error_msg:
-                        timeout_errors.append(column_id)
-                        logger.error(f"Col {column_id}: Timeout exceeded")
+                        logger.error(f"Col {column_id}: Timeout exceeded after all retries")
                     else:
-                        other_errors.append(column_id)
                         logger.error(f"Col {column_id}: {error_msg}")
             
-            # Handle errors - raise error count directly
-            error_count = len(timeout_errors) + len(other_errors)
-            if error_count > 0:
-                if timeout_errors:
-                    logger.error(f"[CRITICAL] {len(timeout_errors)} timeout errors in columns: {', '.join(timeout_errors)}")
-                if other_errors:
-                    logger.error(f"[CRITICAL] {len(other_errors)} other errors in columns: {', '.join(other_errors)}")
-                raise Exception(error_count)
+            # If any columns failed, increment total error count and raise
+            if failed_columns:
+                self.total_errors += len(failed_columns)
+                error_details = {
+                    'failed_columns': failed_columns,
+                    'total_errors': self.total_errors
+                }
+                logger.error(f"Failed columns: {', '.join(failed_columns)} (Total errors: {self.total_errors})")
+                raise ScrapingError(error_details)
             
             if results:
                 self.save_latest_tweets()
                 
             return results
             
-        except Exception as e:
-            logger.error(f"[CRITICAL] Scrape failed: {str(e)}")
+        except ScrapingError:
             raise
+        except Exception as e:
+            logger.error(f"[CRITICAL] Unexpected scrape failure: {str(e)}")
+            self.total_errors += len(self.columns)  # Count all columns as failed
+            raise ScrapingError({
+                'failed_columns': list(self.columns.keys()),
+                'total_errors': self.total_errors,
+                'unexpected_error': str(e)
+            })
+
+class ScrapingError(Exception):
+    """Custom error class to handle scraping errors with detailed information"""
+    def __init__(self, error_details):
+        self.error_details = error_details
+        super().__init__(str(error_details['total_errors']))

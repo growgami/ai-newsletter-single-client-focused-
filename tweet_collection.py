@@ -10,7 +10,7 @@ import zoneinfo
 from pathlib import Path
 from dotenv import load_dotenv
 from browser_automation import BrowserAutomation
-from tweet_scraper import TweetScraper
+from tweet_scraper import TweetScraper, ScrapingError
 from error_handler import with_retry, RetryConfig, BrowserError
 import psutil
 
@@ -137,41 +137,46 @@ class TweetCollector:
             return False
             
     async def collect_tweets(self):
-        """Main tweet collection loop"""
+        """Main loop for collecting tweets"""
         while self.is_running:
             try:
                 # Validate TweetDeck state before scraping
                 if not await self.validate_tweetdeck():
                     logger.error("[CRITICAL] TweetDeck validation failed")
-                    if self.error_count >= self.max_errors:
-                        logger.critical(f"[CRITICAL] RESTARTING - Error threshold reached ({self.error_count}/{self.max_errors} errors)")
-                        await self.shutdown()
-                        os._exit(1)
+                    await self.handle_critical_error("TweetDeck validation failed")
                     continue
 
-                # Single try block for all operations
                 results = await self.scraper.scrape_all_columns(is_monitoring=True)
-                    
-            except Exception as e:
-                try:
-                    # Simple numeric error count
-                    self.error_count += int(str(e))
-                    logger.error(f"Error count increased to {self.error_count}")
-                except ValueError:
-                    # If not a number, count as one error
-                    self.error_count += 1
-                    logger.error(f"Unexpected error format, counting as one. Error count: {self.error_count}")
+                logger.info("Scraping completed successfully")
                 
-                # Check max errors - if reached, exit process
-                if self.error_count >= self.max_errors:
-                    logger.critical(f"[CRITICAL] RESTARTING - Error threshold reached ({self.error_count}/{self.max_errors} errors)")
-                    await self.shutdown()
-                    os._exit(1)  # Force exit to ensure PM2 restart
+            except Exception as e:
+                if isinstance(e, ScrapingError):
+                    error_details = e.error_details
+                    total_errors = error_details['total_errors']
+                    failed_columns = error_details.get('failed_columns', [])
                     
-                # If not max errors yet, wait and retry
-                wait_time = 5 if self.error_count > 1 else 2
-                logger.info(f"Waiting {wait_time}s before retry (errors: {self.error_count}/{self.max_errors})")
-                await asyncio.sleep(wait_time)
+                    # Log error state
+                    logger.error(f"Failed columns in this cycle: {', '.join(failed_columns)}")
+                    logger.error(f"Total error count: {total_errors}")
+                    
+                    # Check if we've hit the error threshold
+                    if total_errors >= self.max_errors:
+                        await self.handle_critical_error(f"Error threshold reached ({total_errors}/{self.max_errors})")
+                    
+                    if 'unexpected_error' in error_details:
+                        logger.error(f"Unexpected error occurred: {error_details['unexpected_error']}")
+                else:
+                    logger.error(f"Unhandled error: {str(e)}")
+                    await self.handle_critical_error("Unhandled error")
+                
+                # Brief pause before next attempt
+                await asyncio.sleep(5)
+
+    async def handle_critical_error(self, reason):
+        """Handle critical error state"""
+        logger.critical(f"[CRITICAL] RESTARTING - {reason}")
+        await self.shutdown()
+        os._exit(1)  # Force exit to ensure PM2 restart
 
     async def shutdown(self):
         """Cleanup and shutdown"""
