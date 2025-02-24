@@ -11,7 +11,6 @@ module.exports = {
       error_file: './logs/tweet_collector_error.log',
       out_file: './logs/tweet_collector_out.log',
       log_file: './logs/tweet_collector.log',
-      time: true,
       min_uptime: '30s',
       exitCodes: [1, 0],
       env: {
@@ -36,7 +35,6 @@ module.exports = {
       error_file: './logs/newsletter_generator_error.log',
       out_file: './logs/newsletter_generator_out.log',
       log_file: './logs/newsletter_generator.log',
-      time: true,
       min_uptime: '30s',
       max_restarts: 10,
       restart_delay: 5000,
