@@ -1,4 +1,4 @@
-"""Tweet summary process orchestrator"""
+"""Newsletter generation process orchestrator"""
 
 import logging
 import asyncio
@@ -26,7 +26,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - [%(levelname)s] - %(message)s',
     handlers=[
-        logging.FileHandler('logs/tweet_summary.log'),
+        logging.FileHandler('logs/newsletter_generator.log'),
         logging.StreamHandler(sys.stdout)  # Explicitly use sys.stdout
     ]
 )
@@ -42,9 +42,9 @@ for name in ['data_processor', 'alpha_filter', 'content_filter', 'news_filter', 
     child_logger.addHandler(logging.StreamHandler(sys.stdout))
     child_logger.propagate = True  # Ensure logs propagate to parent
 
-class TweetSummary:
+class NewsletterGenerator:
     def __init__(self):
-        logger.info("🚀 Initializing Tweet Summary Process")
+        logger.info("🚀 Initializing Newsletter Generator Process")
         # Load environment variables
         load_dotenv()
         logger.info("✓ Environment variables loaded")
@@ -100,7 +100,7 @@ class TweetSummary:
         
         self.check_interval = 3600  # Changed from 120 to 3600 seconds (1 hour)
         logger.info(f"✓ Check interval set to {self.check_interval} seconds (hourly checks)")
-        logger.info("✅ Tweet Summary Process initialization complete")
+        logger.info("✅ Newsletter Generator Process initialization complete")
 
     def _initialize_directories(self):
         """Initialize all required directories with proper permissions"""
@@ -123,7 +123,7 @@ class TweetSummary:
                     os.chmod(dir_path, 0o755)
                     
             # Set up log file
-            log_file = self.log_dir / 'tweet_summary.log'
+            log_file = self.log_dir / 'newsletter_generator.log'
             if not log_file.exists():
                 log_file.touch()
             # Set 644 permissions for log file (rw-r--r--)
@@ -305,7 +305,7 @@ class TweetSummary:
 
     async def run(self):
         """Main process runner"""
-        logger.info("🚀 Starting Tweet Summary main process")
+        logger.info("🚀 Starting Newsletter Generator main process")
         try:
             # Setup scheduled processing job (every 6 hours)
             self.scheduler.add_job(
@@ -332,7 +332,7 @@ class TweetSummary:
 def signal_handler(signum, frame):
     """Handle shutdown signals"""
     logger.info("Shutdown signal received")
-    tweet_summary.is_running = False
+    newsletter_generator.is_running = False
 
 if __name__ == "__main__":
     # Setup signal handlers
@@ -340,9 +340,9 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, signal_handler)
     
     # Create and run process
-    tweet_summary = TweetSummary()
+    newsletter_generator = NewsletterGenerator()
     try:
-        asyncio.run(tweet_summary.run())
+        asyncio.run(newsletter_generator.run())
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received")
     except Exception as e:
