@@ -1,49 +1,71 @@
 module.exports = {
   apps: [
     {
-      name: 'tweet_collection',
-      script: 'tweet_collection.py',
+      name: 'tweet_collector',
+      script: 'tweet_collector.py',
       interpreter: 'python3',
-      version: '2.0',
+      cwd: './src',
+      instances: 1,
       autorestart: true,
       watch: false,
       max_memory_restart: '1G',
-      error_file: './logs/tweet_collection_error.log',
-      out_file: './logs/tweet_collection_out.log',
-      restart_delay: 5000,
+      error_file: './logs/tweet_collector_error.log',
+      out_file: './logs/tweet_collector_out.log',
+      log_file: './logs/tweet_collector.log',
+      time: true,
       min_uptime: '30s',
-      kill_timeout: 3000,
-      exitCodes: [1],
+      exitCodes: [1, 0],
       env: {
+        NODE_ENV: 'development',
         PYTHONUNBUFFERED: '1',
         PYTHONIOENCODING: 'utf-8'
-      }
+      },
+      env_production: {
+        NODE_ENV: 'production',
+        PYTHONUNBUFFERED: '1',
+        PYTHONIOENCODING: 'utf-8'
+      },
     },
     {
-      name: 'tweet_summary',
-      script: 'tweet_summary.py',
+      name: 'newsletter_generator',
+      script: 'newsletter_generator.py',
       interpreter: 'python3',
-      version: '2.0',
+      cwd: './src',
+      instances: 1,
       autorestart: true,
       watch: false,
       max_memory_restart: '1G',
-      error_file: './logs/tweet_summary_error.log',
-      out_file: './logs/tweet_summary_out.log',
+      error_file: './logs/newsletter_generator_error.log',
+      out_file: './logs/newsletter_generator_out.log',
+      log_file: './logs/newsletter_generator.log',
+      time: true,
+      min_uptime: '30s',
+      max_restarts: 10,
+      restart_delay: 5000,
+      kill_timeout: 10000,
+      exp_backoff_restart_delay: 100,
+      exitCodes: [1, 0],
       env: {
+        NODE_ENV: 'development',
         PYTHONUNBUFFERED: '1',
         PYTHONIOENCODING: 'utf-8'
-      }
+      },
+      env_production: {
+        NODE_ENV: 'production',
+        PYTHONUNBUFFERED: '1',
+        PYTHONIOENCODING: 'utf-8'
+      },
     },
     {
-      name: 'kol_pump',
-      script: 'kol_pump.py',
+      name: 'slack_pump',
+      script: 'slack_pump.py',
       interpreter: 'python3',
       version: '1.0',
       autorestart: true,
       watch: false,
       max_memory_restart: '1G',
-      error_file: './logs/kol_pump_error.log',
-      out_file: './logs/kol_pump_out.log',
+      error_file: './logs/slack_pump_error.log',
+      out_file: './logs/slack_pump_out.log',
       env: {
         PYTHONUNBUFFERED: '1',
         PYTHONIOENCODING: 'utf-8'
