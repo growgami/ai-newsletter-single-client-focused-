@@ -1,4 +1,5 @@
 '''
+LEGACY FILE KEEP FOR REFERENCE
 """Tweet collection process for continuous background scraping"""
 
 import os
