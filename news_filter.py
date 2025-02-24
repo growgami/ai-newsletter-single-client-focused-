@@ -323,23 +323,44 @@ class NewsFilter:
                 logger.error(f"Invalid subcategory response format")
                 return False
 
-            # Validate subcategories
+            # Validate subcategories and remove empty ones
             subcategories = result[CATEGORY]
             if not isinstance(subcategories, dict) or not subcategories:
                 logger.error(f"Invalid subcategories format")
                 return False
 
-            # Count total categorized tweets
-            categorized_tweets = sum(len(tweets) for tweets in subcategories.values())
+            logger.info("Checking subcategories before cleaning:")
+            for subcat, tweets in subcategories.items():
+                logger.info(f"   • {subcat}: {len(tweets) if isinstance(tweets, list) else 'invalid'} tweets")
 
-            # Log results
+            # Remove any empty subcategories
+            non_empty_subcategories = {}
+            for subcat, tweets in subcategories.items():
+                if isinstance(tweets, list) and len(tweets) > 0:
+                    non_empty_subcategories[subcat] = tweets
+                    logger.info(f"   ✓ Keeping subcategory '{subcat}' with {len(tweets)} tweets")
+                else:
+                    logger.warning(f"   ✗ Removing empty or invalid subcategory '{subcat}'")
+
+            if not non_empty_subcategories:
+                logger.error("No valid non-empty subcategories found")
+                return False
+
+            # Update result with cleaned subcategories
+            result[CATEGORY] = non_empty_subcategories
+
+            # Count total categorized tweets
+            categorized_tweets = sum(len(tweets) for tweets in non_empty_subcategories.values())
+
+            # Log final results
+            logger.info("Final subcategory distribution:")
             logger.info(f"📊 Processing Results for {CATEGORY}:")
             logger.info(f"   • Initial tweets: {len(valid_tweets)}")
             logger.info(f"   • After URL deduplication: {len(url_deduped_tweets)}")
             logger.info(f"   • After content deduplication: {len(content_deduped_tweets)}")
             logger.info(f"   • Final categorized tweets: {categorized_tweets}")
-            logger.info(f"   • Subcategories created: {len(subcategories)}")
-            for subcat, tweets in subcategories.items():
+            logger.info(f"   • Subcategories created: {len(non_empty_subcategories)}")
+            for subcat, tweets in non_empty_subcategories.items():
                 logger.info(f"     - {subcat}: {len(tweets)} tweets")
 
             # Save output atomically
