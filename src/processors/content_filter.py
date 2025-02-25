@@ -229,11 +229,13 @@ A summary must consist of two strictly separated parts that flow naturally toget
      * Treasury/spending figures
      * Network performance (throughput, latency)
      * Official announcements
+     * The tweet text is from {category} Official Accounts
    - Use the tweet's author when they are:
      * Providing analysis/commentary
      * Making predictions
      * Sharing personal research/insights
      * Discussing third-party developments
+     * Reposted text or quoted text is from {category} Official Accounts
    - Never credit a reporter/analyst for the project's own metrics or achievements
    - The attribution must connect naturally to the content that follows
    - NEVER include @ symbols in attributions - remove them if present in author names
@@ -632,7 +634,8 @@ Return ONLY a JSON object in this exact format:
                         quoted_text = item.get('quoted_content', '')  # Updated from alpha_filter output
                         author = item.get('author', '')  # Updated from alpha_filter output
                         
-                        result = await self._extract_summary(tweet_text, reposted_text, quoted_text, author)
+                        # Pass the CATEGORY to _extract_summary
+                        result = await self._extract_summary(tweet_text, reposted_text, quoted_text, author, CATEGORY)
                         
                         if result:
                             # Create filtered item with original fields structure
@@ -663,17 +666,19 @@ Return ONLY a JSON object in this exact format:
             
             if not filtered_items:
                 logger.warning(f"No tweets found in column {column_id}")
-                return []
+                return {CATEGORY: {'tweets': []}}  # Return empty but valid structure
             
             logger.info(f"Found {len(filtered_items)} unique tweets")
             
             return {
-                'tweets': filtered_items
+                CATEGORY: {
+                    'tweets': filtered_items
+                }
             }
             
         except Exception as e:
             logger.error(f"Error in process_column: {str(e)}")
-            return []
+            return {CATEGORY: {'tweets': []}}  # Return empty but valid structure
 
     def _get_category_name(self, column_id):
         """Get category name"""
@@ -709,23 +714,18 @@ Return ONLY a JSON object in this exact format:
             
             # Load existing output or create new structure
             output_file = self._get_output_file(date_str)
+            output = {}
             if output_file.exists():
                 try:
                     with open(output_file, 'r') as f:
                         output = json.load(f)
                 except Exception as e:
                     logger.error(f"Error loading existing output: {str(e)}")
-                    output = {
-                        CATEGORY: {
-                            'tweets': []
-                        }
-                    }
-            else:
-                output = {
-                    CATEGORY: {
-                        'tweets': []
-                    }
-                }
+                    # Initialize with empty structure instead of predefined structure
+            
+            # Ensure category structure exists
+            if CATEGORY not in output:
+                output[CATEGORY] = {'tweets': []}
             
             # Process tweets in chunks for rate limiting
             chunk_size = 5  # Process 5 tweets at a time
@@ -734,6 +734,11 @@ Return ONLY a JSON object in this exact format:
             # Get current state
             state = self._load_state()
             start_chunk = state.get('last_chunk', 0)
+            
+            # Reset start_chunk if it's beyond total chunks or if previous run was completed
+            if start_chunk >= total_chunks or state.get('completed', False):
+                logger.info(f"Resetting chunk counter from {start_chunk} to 0 (total chunks: {total_chunks})")
+                start_chunk = 0
             
             logger.info(f"Processing {len(tweets)} tweets in {total_chunks} chunks, starting from chunk {start_chunk + 1}")
             
@@ -754,21 +759,34 @@ Return ONLY a JSON object in this exact format:
                 # Process chunk
                 result = await self.process_column(chunk, "combined")
                 
-                if result and result.get('tweets'):
-                    # Add new tweets to output under category
-                    output[CATEGORY]['tweets'].extend(result['tweets'])
+                # Check if result is valid and has the expected structure
+                if result and isinstance(result, dict):
+                    # Get the category key - either CATEGORY or first key in result
+                    category_key = CATEGORY
+                    if CATEGORY not in result and len(result) > 0:
+                        # Use the first category key found
+                        category_key = next(iter(result))
+                        logger.info(f"Using category key: {category_key}")
                     
-                    # Save output atomically
-                    try:
-                        temp_file = output_file.with_suffix('.tmp')
-                        with open(temp_file, 'w') as f:
-                            json.dump(output, f, indent=2)
-                        temp_file.replace(output_file)  # Atomic write
-                        logger.info(f"Saved {len(result['tweets'])} new tweets (total: {len(output[CATEGORY]['tweets'])})")
-                    except Exception as e:
-                        logger.error(f"Error saving output: {str(e)}")
-                        if temp_file.exists():
-                            temp_file.unlink()
+                    # Check if tweets exist under the category
+                    if category_key in result and 'tweets' in result[category_key]:
+                        # Add new tweets to output under category
+                        if category_key not in output:
+                            output[category_key] = {'tweets': []}
+                        
+                        output[category_key]['tweets'].extend(result[category_key]['tweets'])
+                        
+                        # Save output atomically
+                        try:
+                            temp_file = output_file.with_suffix('.tmp')
+                            with open(temp_file, 'w') as f:
+                                json.dump(output, f, indent=2)
+                            temp_file.replace(output_file)  # Atomic write
+                            logger.info(f"Saved {len(result[category_key]['tweets'])} new tweets (total: {len(output[category_key]['tweets'])})")
+                        except Exception as e:
+                            logger.error(f"Error saving output: {str(e)}")
+                            if temp_file.exists():
+                                temp_file.unlink()
                 
                 # Update state
                 state['last_chunk'] = chunk_number
@@ -791,6 +809,8 @@ Return ONLY a JSON object in this exact format:
             
         except Exception as e:
             logger.error(f"Error in filter_content: {str(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return None
             
     def _validate_state(self, state):
@@ -878,12 +898,23 @@ Return ONLY a JSON object in this exact format:
     def reset_state(self):
         """Reset processing state to start fresh"""
         try:
-            if self.state_file.exists():
-                self.state_file.unlink()
+            # Create a fresh state object
+            fresh_state = {
+                'last_run_date': None,
+                'last_processed_date': None,
+                'last_chunk': 0,
+                'total_chunks': 0,
+                'completed': False
+            }
+            
+            # Save the fresh state
+            self._save_state(fresh_state)
+            
             # Also clear output files
             output_file = self._get_output_file(None)
             if output_file.exists():
                 output_file.unlink()
+                
             logger.info("Reset processing state and cleared outputs")
         except Exception as e:
             logger.error(f"Error resetting state: {str(e)}")
