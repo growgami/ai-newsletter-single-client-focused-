@@ -100,6 +100,7 @@ class NewsletterGenerator:
         
         self.check_interval = 3600  # Changed from 120 to 3600 seconds (1 hour)
         logger.info(f"✓ Check interval set to {self.check_interval} seconds (hourly checks)")
+        
         logger.info("✅ Newsletter Generator Process initialization complete")
 
     def _initialize_directories(self):
@@ -225,6 +226,41 @@ class NewsletterGenerator:
         except Exception as e:
             logger.error(f"Error clearing input file: {str(e)}")
 
+    def _get_summary_identifier(self, file_path: Path) -> str:
+        """Generate a unique identifier for a summary file based on content hash"""
+        try:
+            if not file_path.exists():
+                return ""
+            with open(file_path, 'rb') as f:
+                content = f.read()
+                return f"{file_path.name}:{hash(content)}"
+        except Exception as e:
+            logger.error(f"Error generating summary identifier: {str(e)}")
+            return ""
+
+    async def _should_process_file(self, file_path: Path, process_type: str) -> bool:
+        """Determine if a file should be processed based on content and last processing time"""
+        try:
+            if not file_path.exists():
+                return False
+                
+            # Get file modification time
+            mod_time = datetime.fromtimestamp(file_path.stat().st_mtime, tz=timezone.utc)
+            
+            # If we've processed this file before
+            if str(file_path) in self.processed_files[process_type]:
+                # Only reprocess if modified after last processing
+                last_proc = self.last_processed[process_type]
+                if not last_proc or mod_time > last_proc:
+                    return True
+                return False
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error checking file process state: {str(e)}")
+            return False
+
     async def continuous_monitoring(self):
         """Monitor output files and trigger processing"""
         logger.info("🔄 Starting continuous monitoring process (hourly checks)")
@@ -233,29 +269,23 @@ class NewsletterGenerator:
                 if not self.is_processing:
                     current_time = datetime.now(zoneinfo.ZoneInfo("UTC"))
                     logger.info(f"🕒 HOURLY CHECK - Starting at {current_time.strftime('%H:%M:%S UTC')}")
-                    logger.info("🔍 Checking filter outputs...")
                     
-                    # Check alpha filter output only if alpha filter isn't running
+                    # Check alpha filter output
                     if not self.alpha_filter_running:
                         alpha_file = self.data_dir / 'filtered' / 'alpha_filtered' / 'combined_filtered.json'
                         alpha_count = self._count_tweets_in_file(alpha_file)
                         logger.info(f"📊 Alpha filter tweet count: {alpha_count}")
                         
                         if alpha_count >= self.thresholds['content_filter']:
-                            logger.info(f"🎯 Alpha filter threshold met ({alpha_count} tweets), initiating content filter")
                             self.is_processing = True
-                            
-                            # Run content filter
-                            content_result = await self.content_filter.filter_content()
-                            
-                            if content_result:
-                                await self._clear_input_file(alpha_file)
-                                self.alpha_filter.reset_state()  # Reset alpha filter state
-                                logger.info("✅ Content filter completed successfully")
-                            else:
-                                logger.error("❌ Content filter failed")
-                            
-                            self.is_processing = False
+                            try:
+                                content_result = await self.content_filter.filter_content()
+                                if content_result:
+                                    await self._clear_input_file(alpha_file)
+                                    self.alpha_filter.reset_state()
+                                    logger.info("✅ Content filter completed successfully")
+                            finally:
+                                self.is_processing = False
                     
                     # Check content filter output
                     content_file = self.data_dir / 'filtered' / 'content_filtered' / 'combined_filtered.json'
@@ -263,39 +293,45 @@ class NewsletterGenerator:
                     logger.info(f"📊 Content filter tweet count: {content_count}")
                     
                     if content_count >= self.thresholds['news_filter']:
-                        logger.info(f"🎯 Content filter threshold met ({content_count} tweets), initiating news filter")
                         self.is_processing = True
-                        
-                        # Run news filter and check result
-                        news_result = await self.news_filter.process_all()
-                        
-                        if news_result:
-                            logger.info("✅ News filter completed successfully, initiating message sending")
+                        try:
+                            # Get current date for news filter output check
+                            current_date = datetime.now(timezone.utc).strftime('%Y%m%d')
+                            news_output_file = self.data_dir / 'filtered' / 'news_filtered' / f'{CATEGORY.lower()}_summary_{current_date}.json'
                             
-                            # Send to Telegram
-                            telegram_result = await self.telegram_sender.process_news_summary()
+                            # Store initial modification time or None if file doesn't exist
+                            initial_mtime = news_output_file.stat().st_mtime if news_output_file.exists() else None
                             
-                            # Send to Discord if configured
-                            discord_result = True  # Default to True if Discord not configured
-                            if self.discord_sender:
-                                discord_result = await self.discord_sender.process_news_summary()
-                                if discord_result:
-                                    logger.info("✅ Discord sending completed successfully")
+                            # Run news filter
+                            news_result = await self.news_filter.process_all()
+                            
+                            if news_result:
+                                # Check if news filter output was actually updated
+                                current_mtime = news_output_file.stat().st_mtime if news_output_file.exists() else None
+                                
+                                if current_mtime != initial_mtime:
+                                    logger.info("✅ News filter created new output, initiating message sending")
+                                    
+                                    # Send to Telegram
+                                    telegram_result = await self.telegram_sender.process_news_summary()
+                                    
+                                    # Send to Discord if configured
+                                    discord_result = True
+                                    if self.discord_sender:
+                                        discord_result = await self.discord_sender.process_news_summary()
+                                    
+                                    if telegram_result and discord_result:
+                                        await self._clear_input_file(content_file)
+                                        self.content_filter.reset_state()
+                                        logger.info("✅ News processing and message sending completed successfully")
                                 else:
-                                    logger.error("❌ Discord sending failed")
-                            
-                            if telegram_result and discord_result:
-                                await self._clear_input_file(content_file)
-                                self.content_filter.reset_state()  # Reset content filter state
-                                logger.info("✅ News processing and message sending completed successfully")
-                            else:
-                                logger.error("❌ Message sending failed")
-                        else:
-                            logger.error("❌ News filter failed")
-                        
-                        self.is_processing = False
-
-                logger.info(f"💤 Hourly check complete at {datetime.now(zoneinfo.ZoneInfo('UTC')).strftime('%H:%M:%S UTC')}, next check in 1 hour")
+                                    logger.info("ℹ️ News filter output unchanged, skipping send")
+                                    # Still clear content input to prevent reprocessing
+                                    await self._clear_input_file(content_file)
+                                    self.content_filter.reset_state()
+                        finally:
+                            self.is_processing = False
+                
                 await asyncio.sleep(self.check_interval)
                 
             except Exception as e:
