@@ -153,6 +153,12 @@ class NewsFilter:
         return f"""
         You are organizing {category} tweets into logical subcategories based on their content and themes.
 
+        CRITICAL REQUIREMENTS - NO EXCEPTIONS:
+        1. EVERY SINGLE TWEET ({len(tweets)} total) MUST be categorized
+        2. Double check that no tweets are missing or skipped
+        3. Count tweets in each subcategory to ensure total matches input count: {len(tweets)}
+        4. Each tweet must appear in exactly one subcategory
+
         TWEETS TO ORGANIZE:
         {json.dumps(tweets, indent=2)}
 
@@ -170,41 +176,49 @@ class NewsFilter:
         }}
 
         CATEGORIZATION RULES:
-        1. Create 2-4 clear, descriptive subcategories that best group the content
-        2. Each tweet MUST be placed in exactly one subcategory
-        3. Use clear, descriptive names that reflect the content theme (e.g., "Network Metrics", "Development Updates")
-        4. Group similar topics and themes together
-        5. Consider these aspects when categorizing:
-           - Technical updates and metrics
-           - Financial and market data
-           - Community and governance
-           - Development and infrastructure
-           - Partnerships and adoption
-           - Research and innovation
+        1. Analyze the actual content of tweets to determine natural groupings
+        2. Create 2-4 subcategories based on the dominant themes present
+        3. Each tweet MUST be placed in exactly one subcategory
+        4. Use clear, descriptive subcategory names that reflect the actual content
+        5. Ensure logical grouping of related information
 
-        CRITICAL REQUIREMENTS:
+        CRITICAL DATA REQUIREMENTS:
         1. Preserve ALL original fields and values exactly as they appear in input
         2. Required fields that MUST be preserved exactly: attribution, content, url
+        3. ONLY 2-4 subcategories are allowed
         3. DO NOT modify or rewrite any content - use exact values from input
         4. DO NOT create empty subcategories
         5. DO NOT add or remove tweets
+        6. VERIFY FINAL TWEET COUNT MATCHES INPUT: {len(tweets)}
 
         Return ONLY the JSON output with subcategorized tweets, no explanations."""
 
     def _build_content_dedup_prompt(self, tweets):
         """Build prompt for content-based deduplication"""
         return f"""
-        Analyze these tweets and remove semantic duplicates where the attribution and content convey the same information.
-        Choose the most informative version when duplicates are found.
+        Analyze and deduplicate these tweets by identifying and removing redundant information while preserving meaningful variations.
 
         TWEETS TO DEDUPLICATE:
         {json.dumps(tweets, indent=2)}
 
         DEDUPLICATION RULES:
-        1. Compare attribution + content semantically
-        2. If multiple tweets convey the same core information, keep only the most informative one
-        3. Preserve exact field values - do not modify content
-        4. Keep all required fields: attribution, content, url
+        1. Remove tweets only when they are truly redundant:
+           - Exact same information with no additional context
+           - Same event with no new details
+           - Same metrics without additional analysis
+           - Same announcement without unique perspective
+        
+        2. Similarity Analysis:
+           - Focus on semantic similarity of the content
+           - Identify information overlap
+           - Keep tweets that add new context or details
+           - Preserve unique perspectives on same topic
+           - Maintain different angles of coverage
+        
+        3. Data Requirements:
+           - Keep exact field values - no modifications
+           - Maintain required fields: attribution, content, url
+           - Preserve data structure integrity
 
         REQUIRED OUTPUT FORMAT:
         {{
