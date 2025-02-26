@@ -6,13 +6,16 @@ from pathlib import Path
 import asyncio
 from datetime import datetime
 from typing import Dict, List, Optional
+from playwright._impl._errors import TimeoutError
 
 # Get logger with explicit module name
 logger = logging.getLogger('deck_scraper')
 
 class ScrapingError(Exception):
     """Custom error class for scraping errors"""
-    pass
+    def __init__(self, message: str, original_error: Exception = None):
+        super().__init__(message)
+        self.original_error = original_error
 
 class DeckScraper:
     def __init__(self, page, config: dict):
@@ -250,6 +253,24 @@ class DeckScraper:
             logger.error(f"Error processing tweet: {str(e)}")
             return None
 
+    def handle_scraping_error(self, e: Exception, context: str) -> None:
+        """Handle scraping errors and ensure they propagate properly to tweet_collector"""
+        error_msg = str(e)
+        
+        # Log the error with context
+        logger.error(f"{context}: {error_msg}")
+        
+        # For TimeoutError, create a specific error message
+        if isinstance(e, TimeoutError):
+            raise ScrapingError(f"Timeout while {context}: {error_msg}", e)
+        
+        # For ScrapingError, re-raise as is
+        if isinstance(e, ScrapingError):
+            raise e
+            
+        # For other exceptions, wrap in ScrapingError
+        raise ScrapingError(f"{context}: {error_msg}", e)
+
     async def get_column_tweets(self, column_id: str, is_monitoring: bool = False) -> List[dict]:
         """Get tweets from a specific column"""
         try:
@@ -261,8 +282,10 @@ class DeckScraper:
             columns = await self.page.query_selector_all('div[data-testid="multi-column-layout-column-content"]')
             index = int(column_id)  # Keep 0-based indexing
             if index >= len(columns):
-                logger.error(f"🚫 Column {index}: Out of range")
-                raise ScrapingError(f"Column {index} out of range")
+                self.handle_scraping_error(
+                    ScrapingError(f"Column {index} out of range"),
+                    f"Column {index} access error"
+                )
                 
             column_element = columns[index]
             
@@ -290,10 +313,16 @@ class DeckScraper:
                 
                 tweet_link = await first_tweet.query_selector('a[href*="/status/"]')
                 if not tweet_link:
-                    raise ScrapingError(f"Failed to get tweet link in column {column_id}")
+                    self.handle_scraping_error(
+                        ScrapingError("Failed to find tweet link"),
+                        f"Tweet link error in column {column_id}"
+                    )
                     
-                href = await tweet_link.get_attribute('href')
-                tweet_id = href.split('/status/')[-1]
+                try:
+                    href = await tweet_link.get_attribute('href')
+                    tweet_id = href.split('/status/')[-1]
+                except TimeoutError as e:
+                    self.handle_scraping_error(e, f"Timeout getting tweet link in column {column_id}")
                 
                 if tweet_id == latest_id:
                     return []  # No new tweets is a valid state
@@ -303,18 +332,18 @@ class DeckScraper:
             # Process tweets
             tweet_data_list = []
             for tweet_element in tweets:
-                tweet_data = await self.get_tweet_data(tweet_element)
-                if tweet_data:
-                    tweet_data['column'] = column['title']
-                    tweet_data_list.append(tweet_data)
+                try:
+                    tweet_data = await self.get_tweet_data(tweet_element)
+                    if tweet_data:
+                        tweet_data['column'] = column['title']
+                        tweet_data_list.append(tweet_data)
+                except Exception as e:
+                    self.handle_scraping_error(e, f"Failed to process tweet in column {column_id}")
             
             return tweet_data_list
             
-        except ScrapingError:
-            raise  # Re-raise ScrapingError
         except Exception as e:
-            logger.error(f"❌ Error in column {column_id}: {str(e)}")
-            raise ScrapingError(f"Failed to scrape column {column_id}: {str(e)}")
+            self.handle_scraping_error(e, f"Error processing column {column_id}")
 
     async def scrape_all_columns(self, is_monitoring=False):
         """Scrape all columns concurrently"""
@@ -347,8 +376,7 @@ class DeckScraper:
                             
                         results.append((column_id, len(tweets)))
                 except Exception as e:
-                    logger.error(f"Column {column_id}: {str(e)}")
-                    raise ScrapingError(f"Failed to scrape column {column_id}")
+                    self.handle_scraping_error(e, f"Failed to process column {column_id}")
             
             if results:
                 self.save_latest_tweets()
@@ -358,5 +386,4 @@ class DeckScraper:
             return results
             
         except Exception as e:
-            logger.error(f"Critical scrape failure: {str(e)}")
-            raise 
+            self.handle_scraping_error(e, "Critical scraping failure") 
