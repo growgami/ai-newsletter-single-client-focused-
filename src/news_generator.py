@@ -245,7 +245,7 @@ class NewsGenerator:
             self.is_processing = False
 
     async def process_alpha_filter(self):
-        """Run alpha filter processing for yesterday's data"""
+        """Run data processor and alpha filter for yesterday's data"""
         if self.is_processing:
             logger.warning("⚠️ Another process is running, skipping alpha filter")
             return
@@ -253,23 +253,30 @@ class NewsGenerator:
         try:
             self.is_processing = True
             date_str = self._get_yesterday_date()
-            logger.info(f"🔄 Starting alpha filter processing for {date_str}")
+            logger.info(f"🔄 Starting data processing and alpha filter for {date_str}")
             
-            # Check for data processor output
-            data_file = self.data_dir / 'processed' / f'{date_str}_processed.json'
-            if not data_file.exists():
-                logger.warning("No data processor output found, skipping alpha filter")
-                return
-            
-            # Run alpha filter - accumulate filtered tweets
-            alpha_result = await self.alpha_filter.process_content(date_str)
-            if alpha_result:
-                # Clear processed input after successful alpha filtering
-                await self._clear_input_file(data_file)
-                logger.info("✅ Alpha filter processing complete")
+            # First run data processor
+            processed_count = await self.data_processor.process_tweets(date_str)
+            if processed_count > 0:
+                logger.info(f"✅ Processed {processed_count} new tweets")
+                
+                # Check data processor output
+                data_file = self.data_dir / 'processed' / f'{date_str}_processed.json'
+                if not data_file.exists():
+                    logger.error("❌ Data processor did not create output")
+                    return
+                    
+                # Run alpha filter on new data
+                alpha_result = await self.alpha_filter.process_content(date_str)
+                if alpha_result:
+                    # Clear processed input after successful alpha filtering
+                    await self._clear_input_file(data_file)
+                    logger.info("✅ Alpha filter processing complete")
+            else:
+                logger.info("ℹ️ No new tweets to process")
             
         except Exception as e:
-            logger.error(f"❌ Error in alpha filter processing: {str(e)}")
+            logger.error(f"❌ Error in data processing or alpha filtering: {str(e)}")
         finally:
             self.is_processing = False
 
@@ -419,21 +426,13 @@ class NewsGenerator:
         """Main process runner"""
         logger.info("🚀 Starting News Generator main process")
         try:
-            # Schedule data processor - every hour
-            self.scheduler.add_job(
-                self.process_data,
-                CronTrigger(hour='0-23', minute=45, timezone=timezone.utc),
-                id='data_processor'
-            )
-            logger.info("✓ Data processor scheduled for every hour at :45")
-            
-            # Schedule alpha filter - every hour
+            # Schedule alpha filter (with data processor) - every hour
             self.scheduler.add_job(
                 self.process_alpha_filter,
                 CronTrigger(hour='0-23', minute=0, timezone=timezone.utc),
                 id='alpha_filter'
             )
-            logger.info("✓ Alpha filter scheduled for every hour at :00")
+            logger.info("✓ Alpha filter (with data processor) scheduled for every hour")
             
             # Schedule content filter - every 5 hours
             self.scheduler.add_job(
