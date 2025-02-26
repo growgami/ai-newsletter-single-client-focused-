@@ -232,10 +232,10 @@ class NewsGenerator:
             date_str = self._get_yesterday_date()
             logger.info(f"🔄 Starting data processing for {date_str}")
             
-            # Run data processor
+            # Run data processor - accumulate tweets
             processed_count = await self.data_processor.process_tweets(date_str)
             if processed_count > 0:
-                logger.info(f"✅ Processed {processed_count} tweets")
+                logger.info(f"✅ Processed {processed_count} new tweets")
             else:
                 logger.info("ℹ️ No new tweets to process")
             
@@ -255,9 +255,18 @@ class NewsGenerator:
             date_str = self._get_yesterday_date()
             logger.info(f"🔄 Starting alpha filter processing for {date_str}")
             
-            # Run alpha filter
-            await self.alpha_filter.process_content(date_str)
-            logger.info("✅ Alpha filter processing complete")
+            # Check for data processor output
+            data_file = self.data_dir / 'processed' / f'{date_str}_processed.json'
+            if not data_file.exists():
+                logger.warning("No data processor output found, skipping alpha filter")
+                return
+            
+            # Run alpha filter - accumulate filtered tweets
+            alpha_result = await self.alpha_filter.process_content(date_str)
+            if alpha_result:
+                # Clear processed input after successful alpha filtering
+                await self._clear_input_file(data_file)
+                logger.info("✅ Alpha filter processing complete")
             
         except Exception as e:
             logger.error(f"❌ Error in alpha filter processing: {str(e)}")
@@ -280,11 +289,22 @@ class NewsGenerator:
             if not alpha_file.exists():
                 logger.warning("No alpha filter output found")
                 return
+                
+            # Verify alpha file is not empty
+            try:
+                with open(alpha_file, 'r') as f:
+                    alpha_data = json.load(f)
+                if not alpha_data.get('tweets', []):
+                    logger.warning("Alpha filter output is empty")
+                    return
+            except json.JSONDecodeError:
+                logger.error("❌ Invalid JSON in alpha filter output")
+                return
             
-            # Run content filter
+            # Run content filter - accumulate filtered content
             content_result = await self.content_filter.filter_content()
             if content_result:
-                # Clear alpha filter input after successful processing
+                # Clear alpha filter input after successful content filtering
                 await self._clear_input_file(alpha_file)
                 self.alpha_filter.reset_state()
                 logger.info("✅ Content filter processing complete")
@@ -311,15 +331,32 @@ class NewsGenerator:
                 logger.warning("No content filter output found")
                 return
 
+            # Verify content file is not empty and valid
+            try:
+                with open(content_file, 'r') as f:
+                    content_data = json.load(f)
+                if not content_data.get(CATEGORY, {}).get('tweets', []):
+                    logger.warning("Content filter output is empty")
+                    return
+            except json.JSONDecodeError:
+                logger.error("❌ Invalid JSON in content filter output")
+                return
+
             # Check for content overlap before processing
             has_overlap = await self._check_content_overlap(content_file)
             if has_overlap:
                 logger.warning("❌ Found overlapping content with previous summary, skipping processing")
                 return
             
-            # Run news filter
+            # Run news filter - process accumulated content
             news_result = await self.news_filter.process_all()
             if news_result:
+                # Verify news filter output
+                news_file = self.data_dir / 'filtered' / 'news_filtered' / f'{CATEGORY.lower()}_summary_{date_str}.json'
+                if not news_file.exists():
+                    logger.error("❌ News filter failed to create output")
+                    return
+                
                 # Send notifications if configured
                 send_success = True
                 
@@ -346,7 +383,6 @@ class NewsGenerator:
                 if send_success:
                     # Move news file to history
                     try:
-                        news_file = self.data_dir / 'filtered' / 'news_filtered' / f'{CATEGORY.lower()}_summary_{date_str}.json'
                         history_dir = self.data_dir / 'news_history'
                         history_file = history_dir / f'{CATEGORY.lower()}_summary_{date_str}.json'
                         
@@ -355,8 +391,15 @@ class NewsGenerator:
                         os.chmod(history_dir, 0o755)  # Set proper permissions
                         
                         if news_file.exists():
-                            news_file.replace(history_file)
-                            logger.info(f"✅ Moved news file to history: {history_file.name}")
+                            # Verify news file is valid before moving
+                            try:
+                                with open(news_file, 'r') as f:
+                                    json.load(f)  # Validate JSON
+                                news_file.replace(history_file)
+                                logger.info(f"✅ Moved news file to history: {history_file.name}")
+                            except json.JSONDecodeError:
+                                logger.error("❌ Invalid JSON in news filter output")
+                                return
                         
                         # Clear content filter input after successful processing and sending
                         await self._clear_input_file(content_file)
