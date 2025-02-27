@@ -19,8 +19,9 @@ CATEGORY: str = 'Polkadot'
 # Used in:
 # - alpha_filter.py: For enhancing alpha signal detection
 ALPHA_CONSIDERATIONS: List[str] = [
-    'Place importance on discussions of Polkadot',
-    'Look out for mentions of Hydration, Substrate, and Kusama'
+    'Place importance on discussions of AI Agents',
+    'Place importance on discussions of AI integration',
+    'Place importance on discussions of AI development',
 ]
 
 # Channel ID mapping for Telegram
