@@ -299,6 +299,8 @@ class TelegramSender:
             # Add footer with channel reference
             if channel_username:
                 lines.append(f"\nFollow @{channel_username} for more updates")
+            else:
+                lines.append("\nStay tuned for more updates!")
             
             final_text = "\n".join(lines)
             logger.error(f"DEBUG - Final text length: {len(final_text)}")  # Temporary debug
@@ -378,10 +380,10 @@ class TelegramSender:
                 # Get channel info to get username
                 try:
                     chat = await self.bot.get_chat(chat_id=channel_id)
-                    channel_username = chat.username if chat.username else channel_name.lower()
+                    channel_username = chat.username  # Only use actual Telegram username
                 except Exception as e:
                     logger.warning(f"Could not get channel info: {str(e)}")
-                    channel_username = channel_name.lower()
+                    channel_username = None  # Fall back to None instead of channel_name
                 
                 # Format message with channel-specific footer
                 formatted_text = await self.format_category_summary(category, data, channel_username)

@@ -24,12 +24,6 @@ load_dotenv()
 # Import after loading environment variables
 from category_mapping import CATEGORY, EMOJI_MAP, DISCORD_WEBHOOKS
 
-# Discord webhook mapping (similar to TELEGRAM_CHANNELS)
-DISCORD_WEBHOOKS = {
-    'GROWGAMI': os.getenv('DISCORD_GROWGAMI_WEBHOOK'),
-    'STABLECOINS': os.getenv('DISCORD_STABLECOINS_WEBHOOK')
-}
-
 class DiscordSender:
     def __init__(self):
         # Initialize data directories
@@ -43,9 +37,9 @@ class DiscordSender:
         self.used_emojis = set()
         
         # Debug: Print webhook URLs
-        logger.error(f"DEBUG - Environment Variables:")
+        logger.info(f"Available Discord webhooks:")
         for name, webhook in DISCORD_WEBHOOKS.items():
-            logger.error(f"Webhook {name}: URL exists = {bool(webhook)}")
+            logger.info(f"- {name}: {'Configured' if webhook else 'Not configured'}")
 
     def _reset_used_emojis(self):
         """Reset the used emojis tracking set"""
@@ -117,10 +111,33 @@ class DiscordSender:
             log_error(logger, e, "Failed to format text")
             raise DataProcessingError(f"Text formatting failed: {str(e)}")
 
+    async def _validate_webhook(self, webhook_url: str) -> bool:
+        """Validate webhook URL format and accessibility"""
+        if not webhook_url:
+            logger.warning("Empty webhook URL")
+            return False
+            
+        if not webhook_url.startswith('https://discord.com/api/webhooks/'):
+            logger.warning(f"Invalid webhook URL format: {webhook_url}")
+            return False
+            
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(webhook_url) as response:
+                    return response.status == 200
+        except Exception as e:
+            logger.error(f"Error validating webhook: {str(e)}")
+            return False
+
     @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
     async def send_message(self, webhook_url: str, text: str) -> bool:
         """Send a message to a Discord channel via webhook"""
-        if not text or not webhook_url:
+        if not text:
+            logger.warning("Empty message text")
+            return False
+            
+        if not await self._validate_webhook(webhook_url):
+            logger.error("Invalid webhook URL")
             return False
             
         try:
