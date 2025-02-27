@@ -273,6 +273,135 @@ class NewsFilter:
             logger.error(f"Error in content-based deduplication: {str(e)}")
             return tweets  # Fall back to original tweets on error
 
+    def _build_news_worthiness_prompt(self, tweets):
+        """Build prompt for news worthiness filtering"""
+        return f"""
+        Analyze these tweets for news worthiness and select the most newsworthy ones.
+
+        TWEETS TO ANALYZE:
+        {json.dumps(tweets, indent=2)}
+
+        SELECTION RULES:
+        1. CRITICAL: ALWAYS KEEP tweets with URLs containing 'x.com' that were shared in Slack
+           These are manually curated and should be preserved regardless of other criteria.
+
+        2. For all other tweets, prioritize those that:
+           - Contain significant announcements or updates
+           - Report important developments or changes
+           - Discuss meaningful events or milestones
+           - Provide valuable insights or analysis
+           - Share notable metrics or achievements
+        
+        3. For tweet urls that do not contain 'x.com', deprioritize those that:
+           - Are purely promotional without substance
+           - Contain generic statements or observations
+           - Repeat commonly known information
+           - Lack concrete information or specifics
+           - Are overly speculative or unsubstantiated
+
+        4. Output Requirements:
+           - ALWAYS KEEP tweets from Slack (URLs with 'x.com')
+           - If remaining input has > 15 tweets, select 10-15 most newsworthy ones
+           - If remaining input has ≤ 15 tweets, keep all truly newsworthy ones
+           - Maintain exact field values - no modifications
+           - Keep required fields: attribution, content, url
+
+        REQUIRED OUTPUT FORMAT:
+        {{
+            "tweets": [
+                {{
+                    "attribution": "original attribution",
+                    "content": "original content",
+                    "url": "original url"
+                }}
+            ]
+        }}
+
+        Return ONLY the JSON output with selected newsworthy tweets, no explanations."""
+
+    async def _filter_news_worthiness(self, tweets):
+        """Filter tweets based on news worthiness"""
+        try:
+            if not tweets:
+                return []
+
+            logger.info(f"Starting news worthiness filtering on {len(tweets)} tweets")
+            
+            # If we have 15 or fewer tweets, process them all at once
+            if len(tweets) <= 15:
+                filter_prompt = self._build_news_worthiness_prompt(tweets)
+                filter_response = await self._api_request(filter_prompt)
+                
+                if not filter_response:
+                    logger.error("No response from news worthiness filter request")
+                    return tweets
+                    
+                # Parse response
+                result = json.loads(filter_response)
+                
+                if not isinstance(result, dict) or 'tweets' not in result:
+                    logger.error("Invalid news worthiness filter response format")
+                    return tweets
+                    
+                filtered_tweets = result['tweets']
+                
+            else:
+                # Process in chunks of 15
+                chunks = [tweets[i:i + 15] for i in range(0, len(tweets), 15)]
+                filtered_chunks = []
+                
+                for chunk in chunks:
+                    filter_prompt = self._build_news_worthiness_prompt(chunk)
+                    filter_response = await self._api_request(filter_prompt)
+                    
+                    if not filter_response:
+                        logger.warning("No response for chunk, keeping original")
+                        filtered_chunks.extend(chunk)
+                        continue
+                        
+                    try:
+                        result = json.loads(filter_response)
+                        if isinstance(result, dict) and 'tweets' in result:
+                            filtered_chunks.extend(result['tweets'])
+                        else:
+                            logger.warning("Invalid chunk response format, keeping original")
+                            filtered_chunks.extend(chunk)
+                    except Exception as e:
+                        logger.warning(f"Error processing chunk: {str(e)}")
+                        filtered_chunks.extend(chunk)
+                
+                filtered_tweets = filtered_chunks
+                
+                # If we still have more than 15 tweets after filtering chunks
+                # Run one final pass to get the most newsworthy 10-15 tweets
+                if len(filtered_tweets) > 15:
+                    final_filter_prompt = self._build_news_worthiness_prompt(filtered_tweets)
+                    final_response = await self._api_request(final_filter_prompt)
+                    
+                    if final_response:
+                        try:
+                            final_result = json.loads(final_response)
+                            if isinstance(final_result, dict) and 'tweets' in final_result:
+                                filtered_tweets = final_result['tweets']
+                        except Exception as e:
+                            logger.error(f"Error in final filtering: {str(e)}")
+            
+            # Validate output
+            valid_filtered = []
+            for tweet in filtered_tweets:
+                if self._validate_tweet_fields(tweet):
+                    valid_filtered.append(tweet)
+                    
+            filtered_count = len(tweets) - len(valid_filtered)
+            logger.info(f"News worthiness filtering removed {filtered_count} tweets")
+            logger.info(f"Remaining tweets after filtering: {len(valid_filtered)}")
+            
+            return valid_filtered
+            
+        except Exception as e:
+            logger.error(f"Error in news worthiness filtering: {str(e)}")
+            return tweets
+
     async def process_content(self):
         """Process content from combined input file"""
         try:
@@ -322,8 +451,12 @@ class NewsFilter:
             content_deduped_tweets = await self._content_based_dedup(url_deduped_tweets)
             logger.info(f"Content deduplication: {len(url_deduped_tweets)} → {len(content_deduped_tweets)} tweets")
 
-            # Generate subcategories with fully deduplicated tweets
-            subcategory_prompt = self._build_subcategory_prompt(content_deduped_tweets, CATEGORY)
+            # News worthiness filtering
+            newsworthy_tweets = await self._filter_news_worthiness(content_deduped_tweets)
+            logger.info(f"News worthiness filtering: {len(content_deduped_tweets)} → {len(newsworthy_tweets)} tweets")
+
+            # Generate subcategories with filtered tweets
+            subcategory_prompt = self._build_subcategory_prompt(newsworthy_tweets, CATEGORY)
             subcategory_response = await self._api_request(subcategory_prompt)
 
             if not subcategory_response:
@@ -371,6 +504,7 @@ class NewsFilter:
             logger.info(f"   • Initial tweets: {len(valid_tweets)}")
             logger.info(f"   • After URL deduplication: {len(url_deduped_tweets)}")
             logger.info(f"   • After content deduplication: {len(content_deduped_tweets)}")
+            logger.info(f"   • After news worthiness filtering: {len(newsworthy_tweets)}")
             logger.info(f"   • Final categorized tweets: {categorized_tweets}")
             logger.info(f"   • Subcategories created: {len(non_empty_subcategories)}")
             for subcat, tweets in non_empty_subcategories.items():
