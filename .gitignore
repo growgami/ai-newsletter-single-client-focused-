@@ -53,3 +53,5 @@ playwright-logs/
 *.bak
 *.swp
 *~
+
+deploy.sh
