@@ -354,6 +354,7 @@ class DeckScraper:
                 tasks.append((column_id, task))
             
             results = []
+            column_results = []  # Track results per column
             
             for column_id, task in tasks:
                 try:
@@ -375,13 +376,16 @@ class DeckScraper:
                             json.dump(tweets_to_save, f, indent=2)
                             
                         results.append((column_id, len(tweets)))
+                        # Store just column number and tweet count
+                        column_results.append(f"Column {column_id}: {len(tweets)}")
                 except Exception as e:
                     self.handle_scraping_error(e, f"Failed to process column {column_id}")
             
             if results:
                 self.save_latest_tweets()
                 total_tweets = sum(count for _, count in results)
-                logger.info(f"Found {total_tweets} new tweets across {len(results)} columns")
+                # Log total and column numbers
+                logger.info(f"Found {total_tweets} new tweets - Breakdown: {', '.join(column_results)}")
             
             return results
             
