@@ -1,17 +1,16 @@
-"""News generation process orchestrator with scheduled processing"""
+"""News generation process orchestrator"""
 
 import logging
 import asyncio
-import signal
 import sys
 import os
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, time
 from pathlib import Path
 import json
+from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from dotenv import load_dotenv
-import zoneinfo
+import signal
 
 from processors.data_processor import DataProcessor
 from processors.alpha_filter import AlphaFilter
@@ -19,25 +18,35 @@ from processors.content_filter import ContentFilter
 from processors.news_filter import NewsFilter
 from senders.telegram_sender import TelegramSender
 from senders.discord_sender import DiscordSender
-from category_mapping import CATEGORY, TELEGRAM_CHANNELS, DISCORD_WEBHOOKS
+from category_mapping import CATEGORY, DISCORD_WEBHOOKS
 
-# Configure root logger with detailed format
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - [%(levelname)s] - %(message)s',
-    handlers=[
-        logging.FileHandler('logs/news_generator.log', encoding='utf-8'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+# Ensure logs directory exists
+logs_dir = Path('logs')
+if not logs_dir.exists():
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(logs_dir, 0o755)  # Set directory permissions
 
-# Force immediate flushing of stdout for PM2
+# Force immediate flushing of stdout
 sys.stdout.reconfigure(line_buffering=True)
 
-# Get the root logger
-root_logger = logging.getLogger()
+# Configure logging format
+log_format = logging.Formatter('[%(levelname).1s] %(message)s')
 
-# Configure subprocess loggers to ensure visibility in PM2
+# Configure main logger
+logger = logging.getLogger('news_generator')
+logger.setLevel(logging.INFO)
+logger.handlers = []  # Clear any existing handlers
+
+# Add handlers for main logger
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setFormatter(log_format)
+logger.addHandler(console_handler)
+
+file_handler = logging.FileHandler('logs/news_generator.log', encoding='utf-8')
+file_handler.setFormatter(log_format)
+logger.addHandler(file_handler)
+
+# Configure subprocess loggers
 subprocess_loggers = [
     'data_processor',
     'alpha_filter',
@@ -49,30 +58,34 @@ subprocess_loggers = [
 
 # Configure each subprocess logger
 for logger_name in subprocess_loggers:
-    logger = logging.getLogger(logger_name)
-    logger.handlers = []  # Remove any existing handlers
-    logger.addHandler(logging.StreamHandler(sys.stdout))
-    logger.addHandler(logging.FileHandler('logs/news_generator.log', encoding='utf-8'))
-    if logger_name in ['httpx', 'openai', 'apscheduler']:
-        logger.setLevel(logging.WARNING)  # Reduce noise from external libraries
-    else:
-        logger.setLevel(logging.INFO)
-    logger.propagate = False  # Prevent duplicate logs
+    sub_logger = logging.getLogger(logger_name)
+    sub_logger.handlers = []  # Clear any existing handlers
+    sub_logger.setLevel(logging.INFO)
+    
+    # Add handlers with same format
+    sub_console = logging.StreamHandler(sys.stdout)
+    sub_console.setFormatter(log_format)
+    sub_logger.addHandler(sub_console)
+    
+    sub_file = logging.FileHandler('logs/news_generator.log', encoding='utf-8')
+    sub_file.setFormatter(log_format)
+    sub_logger.addHandler(sub_file)
+    
+    sub_logger.propagate = False  # Prevent duplicate logs
 
-# Get the main logger
-logger = logging.getLogger(__name__)
-logger.info("🔧 Logging system initialized with subprocess capture")
+# Set external libraries to WARNING level
+for lib_logger in ['httpx', 'openai', 'apscheduler']:
+    logging.getLogger(lib_logger).setLevel(logging.WARNING)
 
 class NewsGenerator:
     def __init__(self):
         logger.info("🚀 Initializing News Generator Process")
-        
         # Load environment variables
         load_dotenv()
         logger.info("✓ Environment variables loaded")
         
-        # Initialize scheduler
-        self.scheduler = AsyncIOScheduler()
+        # Initialize scheduler with explicit timezone
+        self.scheduler = AsyncIOScheduler(timezone=timezone.utc)
         logger.info("✓ Scheduler initialized")
         
         # Get absolute path to project root
@@ -97,15 +110,10 @@ class NewsGenerator:
         logger.info("✓ Content Filter initialized")
         self.news_filter = NewsFilter(config)
         logger.info("✓ News Filter initialized")
+        self.telegram_sender = TelegramSender(config['telegram_token'])
+        logger.info("✓ Telegram Sender initialized")
         
-        # Initialize senders if configured
-        self.telegram_sender = None
-        if any(channel for channel in TELEGRAM_CHANNELS.values()):
-            self.telegram_sender = TelegramSender(config['telegram_token'])
-            logger.info("✓ Telegram Sender initialized")
-        else:
-            logger.info("ℹ️ No Telegram channels configured, Telegram sending disabled")
-            
+        # Initialize Discord sender if any webhooks are configured
         self.discord_sender = None
         if any(webhook for webhook in DISCORD_WEBHOOKS.values()):
             self.discord_sender = DiscordSender()
@@ -113,9 +121,15 @@ class NewsGenerator:
         else:
             logger.info("ℹ️ No Discord webhooks configured, Discord sending disabled")
         
-        # Control flags
-        self.is_running = True
-        self.is_processing = False
+        # Processing state flags
+        self.is_processing = {
+            'data_alpha': False,
+            'content': False,
+            'news': False
+        }
+        
+        # Shutdown flag
+        self.should_shutdown = False
         
         logger.info("✅ News Generator Process initialization complete")
 
@@ -125,10 +139,10 @@ class NewsGenerator:
             required_dirs = {
                 'logs': self.log_dir,
                 'data': self.data_dir,
+                'processed': self.data_dir / 'processed',
                 'alpha_filtered': self.data_dir / 'filtered' / 'alpha_filtered',
                 'content_filtered': self.data_dir / 'filtered' / 'content_filtered',
-                'news_filtered': self.data_dir / 'filtered' / 'news_filtered',
-                'news_history': self.data_dir / 'news_history'
+                'news_filtered': self.data_dir / 'filtered' / 'news_filtered'
             }
             
             for name, dir_path in required_dirs.items():
@@ -142,6 +156,18 @@ class NewsGenerator:
                 log_file.touch()
             os.chmod(log_file, 0o644)
             
+            # Clear any existing state files on startup
+            state_files = [
+                self.data_dir / 'filtered' / 'alpha_filtered' / 'state.json',
+                self.data_dir / 'filtered' / 'content_filtered' / 'state.json',
+                self.data_dir / 'filtered' / 'news_filtered' / 'state.json'
+            ]
+            
+            for state_file in state_files:
+                if state_file.exists():
+                    state_file.unlink()
+                    logger.info(f"Cleared existing state file: {state_file}")
+            
             logger.info("Successfully initialized all required directories")
             
         except Exception as e:
@@ -153,15 +179,10 @@ class NewsGenerator:
         return {
             'deepseek_api_key': os.getenv('DEEPSEEK_API_KEY'),
             'openai_api_key': os.getenv('OPENAI_API_KEY'),
+            'telegram_token': os.getenv('TELEGRAM_BOT_TOKEN'),
             'alpha_threshold': float(os.getenv('ALPHA_THRESHOLD', '0.8')),
-            'risk_threshold': float(os.getenv('RISK_THRESHOLD', '0.4')),
-            'telegram_token': os.getenv('TELEGRAM_BOT_TOKEN')
+            'risk_threshold': float(os.getenv('RISK_THRESHOLD', '0.4'))
         }
-
-    def _get_yesterday_date(self):
-        """Get yesterday's date in YYYYMMDD format"""
-        yesterday = datetime.now(timezone.utc) - timedelta(days=1)
-        return yesterday.strftime('%Y%m%d')
 
     async def _clear_input_file(self, file_path: Path):
         """Clear input file after successful processing"""
@@ -172,312 +193,289 @@ class NewsGenerator:
         except Exception as e:
             logger.error(f"Error clearing input file: {str(e)}")
 
-    async def _check_content_overlap(self, content_file: Path) -> bool:
-        """Check if content from previous summary exists in new content"""
+    async def _clear_state_files(self, stage):
+        """Clear state files for a specific processing stage"""
         try:
-            date_str = self._get_yesterday_date()
-            news_file = self.data_dir / 'filtered' / 'news_filtered' / f'{CATEGORY.lower()}_summary_{date_str}.json'
-            history_file = self.data_dir / 'news_history' / f'{CATEGORY.lower()}_summary_{date_str}.json'
+            state_files = {
+                'data_alpha': [
+                    self.data_dir / 'filtered' / 'alpha_filtered' / 'state.json'
+                ],
+                'content': [
+                    self.data_dir / 'filtered' / 'content_filtered' / 'state.json'
+                ],
+                'news': [
+                    self.data_dir / 'filtered' / 'news_filtered' / 'state.json'
+                ]
+            }
+            
+            if stage in state_files:
+                for state_file in state_files[stage]:
+                    if state_file.exists():
+                        state_file.unlink()
+                        logger.info(f"Cleared state file: {state_file}")
+        except Exception as e:
+            logger.error(f"Error clearing state files for {stage}: {str(e)}")
 
-            # Load new content
-            if not content_file.exists():
-                logger.warning("No content file found to check")
-                return False
+    async def _clear_raw_files(self, date_str):
+        """Clear raw input files after successful processing"""
+        try:
+            raw_dir = self.data_dir / 'raw' / date_str
+            if raw_dir.exists():
+                for file in raw_dir.glob('column_*.json'):
+                    file.unlink()
+                if not any(raw_dir.iterdir()):
+                    raw_dir.rmdir()
+                logger.info(f"Cleared raw files for date: {date_str}")
+        except Exception as e:
+            logger.error(f"Error clearing raw files: {str(e)}")
 
-            with open(content_file, 'r') as f:
-                new_content = json.load(f)
-
-            # Get new tweets
-            new_tweets = new_content.get(CATEGORY, {}).get('tweets', [])
-            if not new_tweets:
-                logger.warning("No tweets found in content file")
-                return False
-
-            # Check both current news file and history file
-            for check_file in [news_file, history_file]:
-                if check_file.exists():
-                    with open(check_file, 'r') as f:
-                        previous_content = json.load(f)
-                    
-                    previous_tweets = previous_content.get(CATEGORY, {}).get('tweets', [])
-                    if previous_tweets:
-                        # Create sets of tweet identifiers (url + content combination)
-                        previous_ids = {f"{t['url']}:{t['content']}" for t in previous_tweets}
-                        new_ids = {f"{t['url']}:{t['content']}" for t in new_tweets}
-                        
-                        # Check for overlap
-                        overlap = previous_ids.intersection(new_ids)
-                        if overlap:
-                            logger.warning(f"Found {len(overlap)} overlapping tweets with {check_file.name}")
-                            logger.info("Overlapping content:")
-                            for tweet_id in overlap:
-                                logger.info(f"- {tweet_id.split(':')[1][:100]}...")
-                            return True
-
-            logger.info("✅ No content overlap found with previous summaries")
+    async def process_data_and_alpha(self, date_str=None):
+        """Process tweets through data processor and alpha filter"""
+        if self.is_processing['data_alpha']:
+            logger.warning("⚠️ Data and alpha processing already in progress")
             return False
 
-        except Exception as e:
-            logger.error(f"Error checking content overlap: {str(e)}")
-            return False
-
-    async def process_data(self):
-        """Run data processor for yesterday's data"""
-        if self.is_processing:
-            logger.warning("⚠️ Another process is running, skipping data processor")
-            return
-
         try:
-            self.is_processing = True
-            date_str = self._get_yesterday_date()
-            logger.info(f"🔄 Starting data processing for {date_str}")
+            self.is_processing['data_alpha'] = True
+            if not date_str:
+                date_str = datetime.now(timezone.utc).strftime('%Y%m%d')
             
-            # Run data processor - accumulate tweets
+            logger.info(f"🔄 Starting data and alpha processing for date: {date_str}")
+            
+            # Clear any existing state files before processing
+            await self._clear_state_files('data_alpha')
+            
+            # Step 1: Process tweets
             processed_count = await self.data_processor.process_tweets(date_str)
             if processed_count > 0:
-                logger.info(f"✅ Processed {processed_count} new tweets")
-            else:
-                logger.info("ℹ️ No new tweets to process")
-            
-        except Exception as e:
-            logger.error(f"❌ Error in data processing: {str(e)}")
-        finally:
-            self.is_processing = False
-
-    async def process_alpha_filter(self):
-        """Run data processor and alpha filter for yesterday's data"""
-        if self.is_processing:
-            logger.warning("⚠️ Another process is running, skipping alpha filter")
-            return
-
-        try:
-            self.is_processing = True
-            date_str = self._get_yesterday_date()
-            logger.info(f"🔄 Starting data processing and alpha filter for {date_str}")
-            
-            # First run data processor
-            processed_count = await self.data_processor.process_tweets(date_str)
-            if processed_count > 0:
-                logger.info(f"✅ Processed {processed_count} new tweets")
+                logger.info(f"✅ Processed {processed_count} tweets")
                 
-                # Check data processor output
-                data_file = self.data_dir / 'processed' / f'{date_str}_processed.json'
-                if not data_file.exists():
-                    logger.error("❌ Data processor did not create output")
-                    return
-                    
-                # Run alpha filter on new data
+                # Step 2: Run alpha filter
                 alpha_result = await self.alpha_filter.process_content(date_str)
                 if alpha_result:
-                    # Clear processed input after successful alpha filtering
-                    await self._clear_input_file(data_file)
-                    logger.info("✅ Alpha filter processing complete")
+                    logger.info("✅ Alpha filtering complete")
+                    
+                    # Clear processed file after successful run
+                    processed_file = self.data_dir / 'processed' / f'{date_str}_processed.json'
+                    await self._clear_input_file(processed_file)
+                    
+                    # Clear raw input files
+                    await self._clear_raw_files(date_str)
+                    
+                    return True
             else:
                 logger.info("ℹ️ No new tweets to process")
             
+            return False
+            
         except Exception as e:
-            logger.error(f"❌ Error in data processing or alpha filtering: {str(e)}")
+            logger.error(f"❌ Error in data and alpha processing: {str(e)}")
+            return False
         finally:
-            self.is_processing = False
+            self.is_processing['data_alpha'] = False
 
     async def process_content_filter(self):
-        """Run content filter processing"""
-        if self.is_processing:
-            logger.warning("⚠️ Another process is running, skipping content filter")
-            return
+        """Process accumulated alpha-filtered tweets through content filter"""
+        if self.is_processing['content']:
+            logger.warning("⚠️ Content filtering already in progress")
+            return False
 
         try:
-            self.is_processing = True
-            date_str = self._get_yesterday_date()
-            logger.info(f"🔄 Starting content filter processing for {date_str}")
+            self.is_processing['content'] = True
+            logger.info("🔄 Starting content filtering of accumulated tweets")
             
-            # Check alpha filter output
+            # Check if we have alpha-filtered content
             alpha_file = self.data_dir / 'filtered' / 'alpha_filtered' / 'combined_filtered.json'
             if not alpha_file.exists():
-                logger.warning("No alpha filter output found")
-                return
-                
-            # Verify alpha file is not empty
-            try:
-                with open(alpha_file, 'r') as f:
-                    alpha_data = json.load(f)
-                if not alpha_data.get('tweets', []):
-                    logger.warning("Alpha filter output is empty")
-                    return
-            except json.JSONDecodeError:
-                logger.error("❌ Invalid JSON in alpha filter output")
-                return
+                logger.info("ℹ️ No alpha-filtered content to process")
+                return False
             
-            # Run content filter - accumulate filtered content
+            # Run content filter
             content_result = await self.content_filter.filter_content()
             if content_result:
-                # Clear alpha filter input after successful content filtering
+                logger.info("✅ Content filtering complete")
+                # Clear alpha filter output after successful processing
                 await self._clear_input_file(alpha_file)
-                self.alpha_filter.reset_state()
-                logger.info("✅ Content filter processing complete")
+                # Clear state files
+                await self._clear_state_files('content')
+                return True
+            
+            return False
             
         except Exception as e:
-            logger.error(f"❌ Error in content filter processing: {str(e)}")
+            logger.error(f"❌ Error in content filtering: {str(e)}")
+            return False
         finally:
-            self.is_processing = False
+            self.is_processing['content'] = False
 
-    async def process_news_filter(self):
-        """Run news filter processing and send notifications"""
-        if self.is_processing:
-            logger.warning("⚠️ Another process is running, skipping news filter")
-            return
+    async def process_news_and_send(self):
+        """Process accumulated content-filtered tweets and send notifications"""
+        if self.is_processing['news']:
+            logger.warning("⚠️ News processing already in progress")
+            return False
 
         try:
-            self.is_processing = True
-            date_str = self._get_yesterday_date()
-            logger.info(f"🔄 Starting news filter processing for {date_str}")
+            self.is_processing['news'] = True
+            current_date = datetime.now(timezone.utc).strftime('%Y%m%d')
+            logger.info(f"🔄 Starting news processing and sending for date: {current_date}")
             
-            # Check content filter output
+            # Check if we have content-filtered tweets
             content_file = self.data_dir / 'filtered' / 'content_filtered' / 'combined_filtered.json'
             if not content_file.exists():
-                logger.warning("No content filter output found")
-                return
-
-            # Verify content file is not empty and valid
-            try:
-                with open(content_file, 'r') as f:
-                    content_data = json.load(f)
-                if not content_data.get(CATEGORY, {}).get('tweets', []):
-                    logger.warning("Content filter output is empty")
-                    return
-            except json.JSONDecodeError:
-                logger.error("❌ Invalid JSON in content filter output")
-                return
-
-            # Check for content overlap before processing
-            has_overlap = await self._check_content_overlap(content_file)
-            if has_overlap:
-                logger.warning("❌ Found overlapping content with previous summary, skipping processing")
-                return
+                logger.info("ℹ️ No content-filtered tweets to process")
+                return False
             
-            # Run news filter - process accumulated content
+            # Run news filter
             news_result = await self.news_filter.process_all()
-            if news_result:
-                # Verify news filter output
-                news_file = self.data_dir / 'filtered' / 'news_filtered' / f'{CATEGORY.lower()}_summary_{date_str}.json'
-                if not news_file.exists():
-                    logger.error("❌ News filter failed to create output")
-                    return
-                
-                # Send notifications if configured
-                send_success = True
-                
-                # Send to Telegram if configured
-                if self.telegram_sender:
-                    logger.info("📤 Sending to Telegram channels...")
-                    telegram_result = await self.telegram_sender.process_news_summary()
-                    if telegram_result:
-                        logger.info("✅ Telegram sending complete")
-                    else:
-                        logger.error("❌ Telegram sending failed")
-                        send_success = False
-                
-                # Send to Discord if configured
-                if self.discord_sender:
-                    logger.info("📤 Sending to Discord channels...")
-                    discord_result = await self.discord_sender.process_news_summary()
-                    if discord_result:
-                        logger.info("✅ Discord sending complete")
-                    else:
-                        logger.error("❌ Discord sending failed")
-                        send_success = False
-                
-                if send_success:
-                    # Move news file to history
-                    try:
-                        history_dir = self.data_dir / 'news_history'
-                        history_file = history_dir / f'{CATEGORY.lower()}_summary_{date_str}.json'
-                        
-                        # Ensure history directory exists
-                        history_dir.mkdir(parents=True, exist_ok=True)
-                        os.chmod(history_dir, 0o755)  # Set proper permissions
-                        
-                        if news_file.exists():
-                            # Verify news file is valid before moving
-                            try:
-                                with open(news_file, 'r') as f:
-                                    json.load(f)  # Validate JSON
-                                news_file.replace(history_file)
-                                logger.info(f"✅ Moved news file to history: {history_file.name}")
-                            except json.JSONDecodeError:
-                                logger.error("❌ Invalid JSON in news filter output")
-                                return
-                        
-                        # Clear content filter input after successful processing and sending
-                        await self._clear_input_file(content_file)
-                        self.content_filter.reset_state()
-                        logger.info("✅ News filter processing, sending, and archiving complete")
-                    except Exception as e:
-                        logger.error(f"❌ Error moving news file to history: {str(e)}")
+            if not news_result:
+                logger.error("❌ News filtering failed")
+                return False
+            
+            logger.info("✅ News filtering complete")
+            
+            # Verify news summary file exists
+            news_file = self.data_dir / 'filtered' / 'news_filtered' / f'{CATEGORY.lower()}_summary_{current_date}.json'
+            if not news_file.exists():
+                logger.error("❌ News summary file not found")
+                return False
+            
+            # Send notifications
+            send_success = True
+            
+            # Send to Telegram
+            logger.info("📤 Sending to Telegram")
+            telegram_result = await self.telegram_sender.process_news_summary()
+            if telegram_result:
+                logger.info("✅ Telegram sending complete")
+            else:
+                logger.error("❌ Telegram sending failed")
+                send_success = False
+            
+            # Send to Discord if configured
+            if self.discord_sender:
+                logger.info("📤 Sending to Discord")
+                discord_result = await self.discord_sender.process_news_summary()
+                if discord_result:
+                    logger.info("✅ Discord sending complete")
                 else:
-                    logger.error("❌ Some sending operations failed")
+                    logger.error("❌ Discord sending failed")
+                    send_success = False
+            
+            if send_success:
+                # Clear content filter output after successful processing
+                await self._clear_input_file(content_file)
+                # Clear state files
+                await self._clear_state_files('news')
+                logger.info("✅ News processing and sending complete")
+                return True
+            
+            return False
             
         except Exception as e:
-            logger.error(f"❌ Error in news filter processing: {str(e)}")
+            logger.error(f"❌ Error in news processing and sending: {str(e)}")
+            return False
         finally:
-            self.is_processing = False
+            self.is_processing['news'] = False
+
+    def setup_schedules(self):
+        """Setup scheduled jobs"""
+        try:
+            # Schedule data and alpha processing every 5 hours
+            self.scheduler.add_job(
+                self.process_data_and_alpha,
+                CronTrigger(hour='*/5', minute='0', timezone=timezone.utc),
+                id='data_alpha_job',
+                replace_existing=True,
+                misfire_grace_time=3600  # Allow job to run up to 1 hour late
+            )
+            logger.info("✓ Scheduled data and alpha processing every 5 hours")
+            
+            # Schedule content filtering to run 5 minutes after data_alpha
+            self.scheduler.add_job(
+                self.process_content_filter,
+                CronTrigger(hour='*/5', minute='5', timezone=timezone.utc),  # Run 5 minutes after data_alpha
+                id='content_filter_job',
+                replace_existing=True,
+                misfire_grace_time=3600  # Allow job to run up to 1 hour late
+            )
+            logger.info("✓ Scheduled content filtering 5 minutes after data_alpha")
+            
+            # Schedule news processing and sending at 23:00 (11 PM)
+            self.scheduler.add_job(
+                self.process_news_and_send,
+                CronTrigger(hour='23', minute='0', timezone=timezone.utc),
+                id='news_send_job',
+                replace_existing=True,
+                misfire_grace_time=3600  # Allow job to run up to 1 hour late
+            )
+            logger.info("✓ Scheduled news processing and sending at 23:00 UTC")
+            
+        except Exception as e:
+            logger.error(f"Error setting up schedules: {str(e)}")
+            raise
+
+    async def shutdown(self):
+        """Graceful shutdown handler"""
+        logger.info("🛑 Initiating graceful shutdown...")
+        self.should_shutdown = True
+        
+        # Wait for any ongoing processes to complete
+        while any(self.is_processing.values()):
+            logger.info("⏳ Waiting for ongoing processes to complete...")
+            await asyncio.sleep(1)
+        
+        # Shutdown scheduler
+        if self.scheduler.running:
+            self.scheduler.shutdown()
+            logger.info("✓ Scheduler shutdown complete")
+        
+        logger.info("✅ Graceful shutdown complete")
 
     async def run(self):
         """Main process runner"""
-        logger.info("🚀 Starting News Generator main process")
         try:
-            # Schedule alpha filter (with data processor) - every hour
-            self.scheduler.add_job(
-                self.process_alpha_filter,
-                CronTrigger(hour='0-23', minute=0, timezone=timezone.utc),
-                id='alpha_filter'
-            )
-            logger.info("✓ Alpha filter (with data processor) scheduled for every hour")
+            # Setup signal handlers
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                asyncio.get_event_loop().add_signal_handler(
+                    sig,
+                    lambda s=sig: asyncio.create_task(self.shutdown())
+                )
             
-            # Schedule content filter - every 5 hours
-            self.scheduler.add_job(
-                self.process_content_filter,
-                CronTrigger(hour='0,5,10,15,20', minute=0, timezone=timezone.utc),
-                id='content_filter'
-            )
-            logger.info("✓ Content filter scheduled for every 5 hours")
+            # Run initial processing cycle on startup
+            logger.info("🔄 Running initial processing cycle on startup...")
             
-            # Schedule news filter - at 23:00
-            self.scheduler.add_job(
-                self.process_news_filter,
-                CronTrigger(hour=23, minute=0, timezone=timezone.utc),
-                id='news_filter'
-            )
-            logger.info("✓ News filter scheduled for 23:00 UTC")
+            # Initial data and alpha processing
+            data_alpha_result = await self.process_data_and_alpha()
+            if data_alpha_result:
+                logger.info("✅ Initial data and alpha processing complete")
+                
+                # Wait for 5 minutes before content filtering
+                logger.info("⏳ Waiting 5 minutes before content filtering...")
+                await asyncio.sleep(300)
+                
+                # Initial content filtering
+                content_result = await self.process_content_filter()
+                if content_result:
+                    logger.info("✅ Initial content filtering complete")
             
-            # Start the scheduler
+            # Setup and start scheduler
+            self.setup_schedules()
             self.scheduler.start()
-            logger.info("✓ Scheduler started successfully")
+            logger.info("🚀 News Generator started successfully")
             
-            # Keep the process running
-            while self.is_running:
+            # Keep the process running until shutdown
+            while not self.should_shutdown:
                 await asyncio.sleep(1)
-            
+                
         except Exception as e:
             logger.error(f"❌ Error in main process: {str(e)}")
         finally:
-            logger.info("🛑 Shutting down scheduler")
-            self.scheduler.shutdown()
-
-def signal_handler(signum, frame):
-    """Handle shutdown signals"""
-    logger.info("Shutdown signal received")
-    news_generator.is_running = False
+            await self.shutdown()
 
 if __name__ == "__main__":
-    # Setup signal handlers
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
-    # Create and run process
-    news_generator = NewsGenerator()
     try:
-        asyncio.run(news_generator.run())
+        generator = NewsGenerator()
+        asyncio.run(generator.run())
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received")
     except Exception as e:
