@@ -246,9 +246,10 @@ A summary must consist of two strictly separated parts that flow naturally toget
    - The content should read as a natural continuation of the attribution
    - Avoid repeating the attribution subject in the content unless needed for clarity
    - Should be framed positively in relation to the subject
+   - The content should mention how it is relevant to the {category}
    - Example pairs:
      * "{category} reports record transaction growth"
-     * "AnalystName explores rising network metrics"
+     * "{author} explores rising network metrics in {category}"
      * "{category} reveals treasury figures"
 
 VALID FORMATS (choose based on content type):
