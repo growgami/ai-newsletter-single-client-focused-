@@ -13,14 +13,15 @@ load_dotenv()
 # - alpha_filter.py: For initial filtering
 # - telegram_sender.py: For message formatting
 # - tweet_summary.py: For output file counting
-CATEGORY: str = 'Polkadot'
+CATEGORY: str = 'AI Agents'
 
 # Additional alpha signal considerations
 # Used in:
 # - alpha_filter.py: For enhancing alpha signal detection
 ALPHA_CONSIDERATIONS: List[str] = [
-    'Place importance on discussions of Polkadot',
-    'Look out for mentions of Hydration, Substrate, and Kusama'
+    'Place importance on discussions of AI Agents',
+    'Place importance on discussions of AI integration',
+    'Place importance on discussions of AI development',
 ]
 
 # Channel ID mapping for Telegram
