@@ -13,7 +13,7 @@ load_dotenv()
 # - alpha_filter.py: For initial filtering
 # - telegram_sender.py: For message formatting
 # - tweet_summary.py: For output file counting
-CATEGORY: str = 'Polkadot'
+CATEGORY: str = 'AI Agents'
 
 # Additional alpha signal considerations
 # Used in:

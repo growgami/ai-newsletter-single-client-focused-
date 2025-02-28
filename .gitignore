@@ -55,3 +55,5 @@ playwright-logs/
 *~
 
 deploy.sh
+setup.sh
+instance_info.txt
