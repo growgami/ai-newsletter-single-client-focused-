@@ -1,5 +1,5 @@
-# Browser automation
-playwright
+# Scraping
+requests
 
 # API clients
 openai

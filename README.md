@@ -26,6 +26,8 @@ An AI-powered news aggregator and summarizer for crypto and web3 content. The se
   - Automatic tweet scraping from shared URLs
   - Direct integration with content filtering pipeline
   - Instant processing of KOL (Key Opinion Leader) content
+  - Preservation of Slack tweets through all filtering stages
+  - Special categorization of content from Slack sources
 
 ## 🔧 Prerequisites
 
@@ -301,6 +303,37 @@ ai-newsletter/
 └── requirements.txt      # Python dependencies
 ```
 
+## 📊 Data Flow for Slack Tweets
+
+The system preserves tweets from Slack throughout the entire filtering pipeline with this data flow:
+
+1. **Slack Integration (`slack_pump.py`)**
+   - Monitors Slack channels for Twitter/X URLs
+   - Processes URLs using Apify API
+   - Adds `from_slack: true` flag to mark tweets
+   - Saves tweets directly to `combined_filtered.json`
+
+2. **Content Filtering (`content_filter.py`)**
+   - Identifies tweets with `from_slack: true` flag
+   - Bypasses normal filtering for these tweets
+   - Preserves all original fields and attributes
+   - Logs preservation of Slack tweets
+
+3. **News Filtering (`news_filter.py`)**
+   - Preserves tweets with `from_slack: true` flag
+   - Bypasses content deduplication process
+   - Bypasses news worthiness filtering
+   - Creates special "From Slack" subcategory when needed
+   - Ensures Slack tweets appear in final output
+
+4. **Alpha Filtering (`alpha_filter.py`)**
+   - Identifies and preserves tweets with `from_slack: true` flag
+   - Assigns high alpha scores (10.0) to Slack tweets
+   - Adds "Slack source" as the alpha signal
+   - Bypasses normal alpha filtering criteria
+
+This implementation ensures that important content shared in Slack channels is automatically preserved throughout all filtering stages and appears in the final newsletter output.
+
 ## 🔍 Troubleshooting
 
 Common issues and solutions:
@@ -322,6 +355,8 @@ Common issues and solutions:
    - Check slack_pump.log for errors
    - Ensure Apify API token is valid
    - Monitor Slack bot connection status
+   - Verify tweets have `from_slack: true` flag set
+   - Check if Slack tweets appear in `combined_filtered.json`
 
 4. **Process Management**
    - Use `pm2 logs` to check for errors
@@ -329,7 +364,14 @@ Common issues and solutions:
    - Check system resources with `top` or `htop`
    - Review PM2 error logs in src/logs/
 
-5. **PM2 Process Configuration**
+5. **Slack Tweet Preservation Issues**
+   - Check logs for "Preserving tweet from Slack" messages
+   - Verify tweets are marked with `from_slack: true` flag
+   - Ensure Slack tweets appear in final output
+   - Look for special "From Slack" subcategory in results
+   - Verify alpha scores for Slack tweets (should be 10.0)
+
+6. **PM2 Process Configuration**
    - All processes run with `python3` interpreter
    - Processes auto-restart on exit codes [0, 1]
    - 30-second minimum uptime requirement

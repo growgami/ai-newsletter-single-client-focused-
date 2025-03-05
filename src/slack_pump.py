@@ -233,7 +233,8 @@ class SLACKPump:
                     'attribution': result['attribution'],
                     'content': result['content'],
                     'url': url,
-                    'original_date': tweet.get('created_at', '')
+                    'original_date': tweet.get('created_at', ''),
+                    'from_slack': True  # Add this field to identify tweets from Slack
                 })
             else:
                 logger.warning(f"Failed to generate summary for tweet: {url}")

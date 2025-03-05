@@ -4,7 +4,7 @@ import logging
 import asyncio
 import sys
 import os
-from datetime import datetime, timezone, time
+from datetime import datetime, timezone, time, timedelta
 from pathlib import Path
 import json
 from dotenv import load_dotenv
@@ -99,6 +99,10 @@ class NewsGenerator:
         # Initialize directories first
         self._initialize_directories()
         
+        # Check if initial processing should run on startup
+        self.run_initial_processing = os.getenv('RUN_INITIAL_PROCESSING', 'true').lower() == 'true'
+        logger.info(f"✓ Initial processing on startup: {'enabled' if self.run_initial_processing else 'disabled'}")
+        
         # Initialize components
         logger.info("🔄 Initializing pipeline components...")
         config = self._get_config()
@@ -130,6 +134,10 @@ class NewsGenerator:
         
         # Shutdown flag
         self.should_shutdown = False
+        
+        # Register signal handlers
+        signal.signal(signal.SIGINT, lambda s, f: asyncio.create_task(self.shutdown()))
+        signal.signal(signal.SIGTERM, lambda s, f: asyncio.create_task(self.shutdown()))
         
         logger.info("✅ News Generator Process initialization complete")
 
@@ -229,6 +237,23 @@ class NewsGenerator:
         except Exception as e:
             logger.error(f"Error clearing raw files: {str(e)}")
 
+    def _get_persistent_date(self):
+        """Get the persistent date from tweet collector's session file"""
+        # Try to get date from session file
+        date_file = Path('data/session/current_date.txt')
+        if date_file.exists():
+            try:
+                return date_file.read_text().strip()
+            except Exception as e:
+                self.logger.error(f"Error reading persistent date: {str(e)}")
+        
+        # If we couldn't get the date from the file, use yesterday's date
+        # This is appropriate since we're processing tweets that were collected yesterday
+        yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+        yesterday_str = yesterday.strftime('%Y%m%d')
+        self.logger.info(f"Using yesterday's date for processing: {yesterday_str}")
+        return yesterday_str
+
     async def process_data_and_alpha(self, date_str=None):
         """Process tweets through data processor and alpha filter"""
         if self.is_processing['data_alpha']:
@@ -238,7 +263,8 @@ class NewsGenerator:
         try:
             self.is_processing['data_alpha'] = True
             if not date_str:
-                date_str = datetime.now(timezone.utc).strftime('%Y%m%d')
+                # Use the persistent date from the tweet collector instead of current date
+                date_str = self._get_persistent_date()
             
             logger.info(f"🔄 Starting data and alpha processing for date: {date_str}")
             
@@ -247,6 +273,8 @@ class NewsGenerator:
             
             # Step 1: Process tweets
             processed_count = await self.data_processor.process_tweets(date_str)
+            
+            # Check if we have processed tweets
             if processed_count > 0:
                 logger.info(f"✅ Processed {processed_count} tweets")
                 
@@ -254,20 +282,37 @@ class NewsGenerator:
                 alpha_result = await self.alpha_filter.process_content(date_str)
                 if alpha_result:
                     logger.info("✅ Alpha filtering complete")
-                    
-                    # Clear processed file after successful run
-                    processed_file = self.data_dir / 'processed' / f'{date_str}_processed.json'
-                    await self._clear_input_file(processed_file)
-                    
-                    # Clear raw input files
-                    await self._clear_raw_files(date_str)
-                    
                     return True
+                else:
+                    logger.warning("⚠️ Alpha filtering did not complete successfully")
+                    return False
             else:
+                # Verify if there are actually tweets in the categories files even if the count is 0
+                # This is a fallback in case the count is wrong but tweets were actually processed
+                processed_file = self.data_dir / 'processed' / f"{date_str}.json"
+                if processed_file.exists():
+                    try:
+                        with open(processed_file, 'r') as f:
+                            data = json.load(f)
+                            actual_count = sum(len(tweets) for category, tweets in data.get('categories', {}).items())
+                            
+                            if actual_count > 0:
+                                logger.info(f"✅ Found {actual_count} tweets in processed file despite count of 0")
+                                
+                                # Run alpha filter with the actual tweets
+                                alpha_result = await self.alpha_filter.process_content(date_str)
+                                if alpha_result:
+                                    logger.info("✅ Alpha filtering complete")
+                                    return True
+                                else:
+                                    logger.warning("⚠️ Alpha filtering did not complete successfully")
+                                    return False
+                    except Exception as e:
+                        logger.error(f"Error checking processed file: {str(e)}")
+                
                 logger.info("ℹ️ No new tweets to process")
-            
-            return False
-            
+                return False
+                
         except Exception as e:
             logger.error(f"❌ Error in data and alpha processing: {str(e)}")
             return False
@@ -380,39 +425,75 @@ class NewsGenerator:
     def setup_schedules(self):
         """Setup scheduled jobs"""
         try:
-            # Schedule data and alpha processing every 5 hours
+            # Schedule the entire news generation process to run at 1:00 AM
             self.scheduler.add_job(
-                self.process_data_and_alpha,
-                CronTrigger(hour='*/5', minute='0', timezone=timezone.utc),
-                id='data_alpha_job',
+                self.run_full_pipeline,
+                CronTrigger(hour=1, minute=0, second=0, timezone=timezone.utc),
+                id='daily_news_generation',
                 replace_existing=True,
                 misfire_grace_time=3600  # Allow job to run up to 1 hour late
             )
-            logger.info("✓ Scheduled data and alpha processing every 5 hours")
-            
-            # Schedule content filtering to run 5 minutes after data_alpha
-            self.scheduler.add_job(
-                self.process_content_filter,
-                CronTrigger(hour='*/5', minute='5', timezone=timezone.utc),  # Run 5 minutes after data_alpha
-                id='content_filter_job',
-                replace_existing=True,
-                misfire_grace_time=3600  # Allow job to run up to 1 hour late
-            )
-            logger.info("✓ Scheduled content filtering 5 minutes after data_alpha")
-            
-            # Schedule news processing and sending at 23:00 (11 PM)
-            self.scheduler.add_job(
-                self.process_news_and_send,
-                CronTrigger(hour='23', minute='0', timezone=timezone.utc),
-                id='news_send_job',
-                replace_existing=True,
-                misfire_grace_time=3600  # Allow job to run up to 1 hour late
-            )
-            logger.info("✓ Scheduled news processing and sending at 23:00 UTC")
+            logger.info("✓ Scheduled full news generation pipeline to run at 1:00 AM UTC")
             
         except Exception as e:
             logger.error(f"Error setting up schedules: {str(e)}")
             raise
+
+    async def run_full_pipeline(self, add_delays=False):
+        """Run the complete news generation pipeline in sequence
+        
+        Args:
+            add_delays: If True, add 5-minute delays between processing stages
+                       (used for initial processing on startup)
+        """
+        try:
+            logger.info("🔄 Starting full news generation pipeline...")
+            
+            # Get yesterday's date for processing
+            yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+            process_date = yesterday.strftime('%Y%m%d')
+            logger.info(f"Processing data for date: {process_date}")
+            
+            # Step 1: Data and alpha processing
+            data_alpha_result = await self.process_data_and_alpha(process_date)
+            if not data_alpha_result:
+                logger.warning("⚠️ Data and alpha processing did not complete successfully")
+                return False
+                
+            logger.info("✅ Data and alpha processing complete")
+            
+            # Add delay if requested (for initial processing)
+            if add_delays:
+                logger.info("⏳ Waiting 5 minutes before content filtering...")
+                await asyncio.sleep(300)
+            
+            # Step 2: Content filtering
+            logger.info("🔄 Starting content filtering...")
+            content_result = await self.process_content_filter()
+            if not content_result:
+                logger.warning("⚠️ Content filtering did not complete successfully")
+                return False
+                
+            logger.info("✅ Content filtering complete")
+            
+            # Add delay if requested (for initial processing)
+            if add_delays:
+                logger.info("⏳ Waiting 5 minutes before news processing...")
+                await asyncio.sleep(300)
+            
+            # Step 3: News processing and sending
+            logger.info("🔄 Starting news processing and sending...")
+            news_result = await self.process_news_and_send()
+            if not news_result:
+                logger.warning("⚠️ News processing and sending did not complete successfully")
+                return False
+                
+            logger.info("✅ Full news generation pipeline completed successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error in full pipeline execution: {str(e)}")
+            return False
 
     async def shutdown(self):
         """Graceful shutdown handler"""
@@ -434,38 +515,30 @@ class NewsGenerator:
     async def run(self):
         """Main process runner"""
         try:
-            # Setup signal handlers
-            for sig in (signal.SIGTERM, signal.SIGINT):
-                asyncio.get_event_loop().add_signal_handler(
-                    sig,
-                    lambda s=sig: asyncio.create_task(self.shutdown())
-                )
-            
-            # Run initial processing cycle on startup
-            logger.info("🔄 Running initial processing cycle on startup...")
-            
-            # Initial data and alpha processing
-            data_alpha_result = await self.process_data_and_alpha()
-            if data_alpha_result:
-                logger.info("✅ Initial data and alpha processing complete")
+            # Run initial processing cycle on startup if configured to do so
+            if self.run_initial_processing:
+                logger.info("🔄 Running initial processing cycle on startup...")
                 
-                # Wait for 5 minutes before content filtering
-                logger.info("⏳ Waiting 5 minutes before content filtering...")
-                await asyncio.sleep(300)
+                # Get yesterday's date for processing
+                yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+                process_date = yesterday.strftime('%Y%m%d')
+                logger.info(f"Processing data for date: {process_date}")
                 
-                # Initial content filtering
-                content_result = await self.process_content_filter()
-                if content_result:
-                    logger.info("✅ Initial content filtering complete")
+                # Initial full pipeline execution with delays between stages
+                # to maintain original behavior
+                await self.run_full_pipeline(add_delays=True)
+            else:
+                logger.info("⏭️ Skipping initial processing on startup (disabled by configuration)")
             
-            # Setup and start scheduler
+            # Setup schedules for recurring processing
             self.setup_schedules()
             self.scheduler.start()
-            logger.info("🚀 News Generator started successfully")
+            logger.info("✅ Schedules set up for recurring processing")
+            logger.info("🚀 News Generator started successfully - will run daily at 1:00 AM UTC")
             
             # Keep the process running until shutdown
             while not self.should_shutdown:
-                await asyncio.sleep(1)
+                await asyncio.sleep(60)  # Check every minute
                 
         except Exception as e:
             logger.error(f"❌ Error in main process: {str(e)}")

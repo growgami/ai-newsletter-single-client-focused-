@@ -13,14 +13,14 @@ load_dotenv()
 # - alpha_filter.py: For initial filtering
 # - telegram_sender.py: For message formatting
 # - tweet_summary.py: For output file counting
-CATEGORY: str = 'Polkadot'
+CATEGORY: str = 'Arbitrum'
 
 # Additional alpha signal considerations
 # Used in:
 # - alpha_filter.py: For enhancing alpha signal detection
 ALPHA_CONSIDERATIONS: List[str] = [
-    'Place importance on discussions of Polkadot',
-    'Look out for mentions of Hydration, Substrate, and Kusama'
+    'Place importance on discussions of Arbitrum',
+    'Look out for mentions of Arbitrum aligned teams Clutch, Renegade, Ostium, Castle Labs, GMX, Nerite, Livepeer, Payasans, Renegade, AiSweatShop, Ostium, Boop, Onkas Ouji , GU Factory, Estate Protocol, The Knowers, Camelot, GMX Blueberry Club, Corn, ApeChain, Sanko Chain, Xai, Huddle01, and Fluid'
 ]
 
 # Channel ID mapping for Telegram

@@ -234,75 +234,116 @@ class NewsFilter:
         Return ONLY the JSON output with deduplicated tweets, no explanations."""
 
     async def _content_based_dedup(self, tweets):
-        """Perform content-based deduplication using AI"""
+        """Remove tweets with duplicate or nearly identical content"""
         try:
             if not tweets:
                 return []
 
             logger.info(f"Starting content-based deduplication on {len(tweets)} tweets")
+
+            # Separate tweets from Slack to preserve them
+            slack_tweets = []
+            regular_tweets = []
             
-            # Build and send prompt
-            dedup_prompt = self._build_content_dedup_prompt(tweets)
-            dedup_response = await self._api_request(dedup_prompt)
-            
-            if not dedup_response:
-                logger.error("No response from content deduplication request")
-                return tweets  # Fall back to original tweets
-                
-            # Parse response
-            result = json.loads(dedup_response)
-            
-            if not isinstance(result, dict) or 'tweets' not in result:
-                logger.error("Invalid content deduplication response format")
-                return tweets
-                
-            deduped_tweets = result['tweets']
-            
-            # Validate output
-            valid_deduped = []
-            for tweet in deduped_tweets:
-                if self._validate_tweet_fields(tweet):
-                    valid_deduped.append(tweet)
+            for tweet in tweets:
+                if tweet.get('from_slack', False):
+                    logger.info(f"Preserving tweet from Slack in content deduplication: {tweet.get('url', '')}")
+                    slack_tweets.append(tweet)
+                else:
+                    regular_tweets.append(tweet)
                     
-            removed_count = len(tweets) - len(valid_deduped)
-            logger.info(f"Content-based deduplication removed {removed_count} similar tweets")
+            logger.info(f"Found {len(slack_tweets)} tweets from Slack that will bypass content deduplication")
             
-            return valid_deduped
+            # If we only have Slack tweets or no regular tweets, return all tweets
+            if not regular_tweets:
+                logger.info("No regular tweets to deduplicate, returning all tweets from Slack")
+                return tweets
+
+            # If we have a small number of tweets, process them all at once
+            if len(regular_tweets) <= 15:
+                dedup_prompt = self._build_content_dedup_prompt(regular_tweets)
+                dedup_response = await self._api_request(dedup_prompt)
+                
+                if not dedup_response:
+                    logger.error("No response from content deduplication request")
+                    # Return all regular tweets plus Slack tweets if request fails
+                    return regular_tweets + slack_tweets
+                    
+                # Parse response
+                result = json.loads(dedup_response)
+                
+                if not isinstance(result, dict) or 'tweets' not in result:
+                    logger.error("Invalid content deduplication response format")
+                    # Return all regular tweets plus Slack tweets if response is invalid
+                    return regular_tweets + slack_tweets
+                    
+                deduped_tweets = result['tweets']
+                
+            else:
+                # Process in chunks of 15
+                chunks = [regular_tweets[i:i + 15] for i in range(0, len(regular_tweets), 15)]
+                deduped_chunks = []
+                
+                for chunk in chunks:
+                    dedup_prompt = self._build_content_dedup_prompt(chunk)
+                    dedup_response = await self._api_request(dedup_prompt)
+                    
+                    if not dedup_response:
+                        logger.warning("No response for chunk, keeping original")
+                        deduped_chunks.extend(chunk)
+                        continue
+                        
+                    try:
+                        result = json.loads(dedup_response)
+                        if isinstance(result, dict) and 'tweets' in result:
+                            deduped_chunks.extend(result['tweets'])
+                        else:
+                            logger.warning("Invalid chunk response format, keeping original")
+                            deduped_chunks.extend(chunk)
+                    except Exception as e:
+                        logger.warning(f"Error processing chunk: {str(e)}")
+                        deduped_chunks.extend(chunk)
+                
+                deduped_tweets = deduped_chunks
+            
+            # Add back the Slack tweets
+            final_tweets = deduped_tweets + slack_tweets
+            logger.info(f"Content deduplication complete: {len(regular_tweets)} → {len(deduped_tweets)} regular tweets, {len(slack_tweets)} Slack tweets preserved")
+            return final_tweets
             
         except Exception as e:
-            logger.error(f"Error in content-based deduplication: {str(e)}")
-            return tweets  # Fall back to original tweets on error
+            logger.error(f"Content deduplication failed: {str(e)}")
+            # Return original tweets if deduplication fails
+            return tweets
 
     def _build_news_worthiness_prompt(self, tweets):
         """Build prompt for news worthiness filtering"""
-        return f"""
-        Analyze these tweets for news worthiness and select the most newsworthy ones.
+        prompt = f"""You are an expert news editor for {CATEGORY}. 
+        Review the following {len(tweets)} tweets and filter based on news worthiness.
+        
+        Your task is to identify and select tweets with meaningful news value. 
 
         TWEETS TO ANALYZE:
         {json.dumps(tweets, indent=2)}
 
         SELECTION RULES:
-        1. CRITICAL: ALWAYS KEEP tweets with URLs containing 'x.com' that were shared in Slack
-           These are manually curated and should be preserved regardless of other criteria.
-
-        2. For all other tweets, prioritize those that:
+        1. Prioritize tweets that:
            - Contain significant announcements or updates
            - Report important developments or changes
            - Discuss meaningful events or milestones
            - Provide valuable insights or analysis
            - Share notable metrics or achievements
         
-        3. For tweet urls that do not contain 'x.com', deprioritize those that:
+        2. Deprioritize tweets that:
            - Are purely promotional without substance
            - Contain generic statements or observations
            - Repeat commonly known information
            - Lack concrete information or specifics
            - Are overly speculative or unsubstantiated
 
-        4. Output Requirements:
-           - ALWAYS KEEP tweets from Slack (URLs with 'x.com')
-           - If remaining input has > 15 tweets, select 10-15 most newsworthy ones
-           - If remaining input has ≤ 15 tweets, keep all truly newsworthy ones
+        3. Output Requirements:
+           - If input has > 15 tweets, select 15-20 most newsworthy ones
+           - If input has ≤ 15 tweets, keep all
            - Maintain exact field values - no modifications
            - Keep required fields: attribution, content, url
 
@@ -318,6 +359,8 @@ class NewsFilter:
         }}
 
         Return ONLY the JSON output with selected newsworthy tweets, no explanations."""
+        
+        return prompt
 
     async def _filter_news_worthiness(self, tweets):
         """Filter tweets based on news worthiness"""
@@ -327,27 +370,51 @@ class NewsFilter:
 
             logger.info(f"Starting news worthiness filtering on {len(tweets)} tweets")
             
-            # If we have 15 or fewer tweets, process them all at once
-            if len(tweets) <= 15:
-                filter_prompt = self._build_news_worthiness_prompt(tweets)
+            # Separate tweets from Slack to preserve them
+            slack_tweets = []
+            regular_tweets = []
+            
+            for tweet in tweets:
+                if tweet.get('from_slack', False):
+                    logger.info(f"Preserving tweet from Slack (from_slack=True): {tweet.get('url', '')}")
+                    slack_tweets.append(tweet)
+                elif 'url' in tweet and 'x.com' in tweet.get('url', '') and 'slack' in tweet.get('url', '').lower():
+                    # For backward compatibility - preserve URLs with 'x.com' and 'slack' in them
+                    logger.info(f"Preserving tweet with Slack URL pattern: {tweet.get('url', '')}")
+                    slack_tweets.append(tweet)
+                else:
+                    regular_tweets.append(tweet)
+                    
+            logger.info(f"Found {len(slack_tweets)} tweets from Slack that will bypass news worthiness filtering")
+            
+            # If we only have Slack tweets or no regular tweets, return all tweets
+            if not regular_tweets:
+                logger.info("No regular tweets to filter, returning all tweets from Slack")
+                return tweets
+                
+            # If we have 15 or fewer regular tweets, process them all at once
+            if len(regular_tweets) <= 15:
+                filter_prompt = self._build_news_worthiness_prompt(regular_tweets)
                 filter_response = await self._api_request(filter_prompt)
                 
                 if not filter_response:
                     logger.error("No response from news worthiness filter request")
-                    return tweets
+                    # Return all regular tweets and slack tweets
+                    return regular_tweets + slack_tweets
                     
                 # Parse response
                 result = json.loads(filter_response)
                 
                 if not isinstance(result, dict) or 'tweets' not in result:
                     logger.error("Invalid news worthiness filter response format")
-                    return tweets
+                    # Return all regular tweets and slack tweets
+                    return regular_tweets + slack_tweets
                     
                 filtered_tweets = result['tweets']
                 
             else:
                 # Process in chunks of 15
-                chunks = [tweets[i:i + 15] for i in range(0, len(tweets), 15)]
+                chunks = [regular_tweets[i:i + 15] for i in range(0, len(regular_tweets), 15)]
                 filtered_chunks = []
                 
                 for chunk in chunks:
@@ -371,32 +438,12 @@ class NewsFilter:
                         filtered_chunks.extend(chunk)
                 
                 filtered_tweets = filtered_chunks
-                
-                # If we still have more than 15 tweets after filtering chunks
-                # Run one final pass to get the most newsworthy 10-15 tweets
-                if len(filtered_tweets) > 15:
-                    final_filter_prompt = self._build_news_worthiness_prompt(filtered_tweets)
-                    final_response = await self._api_request(final_filter_prompt)
-                    
-                    if final_response:
-                        try:
-                            final_result = json.loads(final_response)
-                            if isinstance(final_result, dict) and 'tweets' in final_result:
-                                filtered_tweets = final_result['tweets']
-                        except Exception as e:
-                            logger.error(f"Error in final filtering: {str(e)}")
             
-            # Validate output
-            valid_filtered = []
-            for tweet in filtered_tweets:
-                if self._validate_tweet_fields(tweet):
-                    valid_filtered.append(tweet)
-                    
-            filtered_count = len(tweets) - len(valid_filtered)
-            logger.info(f"News worthiness filtering removed {filtered_count} tweets")
-            logger.info(f"Remaining tweets after filtering: {len(valid_filtered)}")
+            # Add back the Slack tweets
+            final_tweets = filtered_tweets + slack_tweets
+            logger.info(f"News worthiness filtering complete: {len(regular_tweets)} regular tweets → {len(filtered_tweets)} filtered + {len(slack_tweets)} Slack tweets = {len(final_tweets)} total")
             
-            return valid_filtered
+            return final_tweets
             
         except Exception as e:
             logger.error(f"Error in news worthiness filtering: {str(e)}")
@@ -424,15 +471,28 @@ class NewsFilter:
                 logger.warning("No tweets found in input file")
                 return False
 
+            # Separate tweets from Slack to preserve them
+            slack_tweets = []
+            regular_tweets = []
+            
+            for tweet in tweets:
+                if tweet.get('from_slack', False):
+                    logger.info(f"Preserving tweet from Slack: {tweet.get('url', '')}")
+                    slack_tweets.append(tweet)
+                else:
+                    regular_tweets.append(tweet)
+                    
+            logger.info(f"Found {len(slack_tweets)} tweets from Slack that will be preserved")
+
             # Validate input tweets have required fields
             valid_tweets = []
-            for tweet in tweets:
+            for tweet in regular_tweets:
                 if self._validate_tweet_fields(tweet):
                     valid_tweets.append(tweet)
                 else:
                     logger.warning(f"Skipping tweet with missing fields: {tweet.get('url', 'unknown')}")
 
-            if not valid_tweets:
+            if not valid_tweets and not slack_tweets:
                 logger.error("No valid tweets found after field validation")
                 return False
 
@@ -455,6 +515,10 @@ class NewsFilter:
             newsworthy_tweets = await self._filter_news_worthiness(content_deduped_tweets)
             logger.info(f"News worthiness filtering: {len(content_deduped_tweets)} → {len(newsworthy_tweets)} tweets")
 
+            # Add back tweets from Slack (they bypass filtering)
+            newsworthy_tweets.extend(slack_tweets)
+            logger.info(f"Added back {len(slack_tweets)} tweets from Slack")
+            
             # Generate subcategories with filtered tweets
             subcategory_prompt = self._build_subcategory_prompt(newsworthy_tweets, CATEGORY)
             subcategory_response = await self._api_request(subcategory_prompt)
@@ -494,7 +558,35 @@ class NewsFilter:
 
             # Update result with cleaned subcategories
             result[CATEGORY] = non_empty_subcategories
-
+            
+            # Check if we need to add a special 'From Slack' subcategory
+            if slack_tweets:
+                # Create a dedicated subcategory for Slack tweets if they weren't already categorized
+                slack_subcategory = "From Slack"
+                
+                # Check if any slack tweets were already categorized by the model
+                slack_tweet_urls = set(tweet.get('url', '') for tweet in slack_tweets)
+                categorized_slack_urls = set()
+                
+                # Check all subcategories for slack tweets
+                for subcategory, subcat_tweets in result[CATEGORY].items():
+                    for i, tweet in enumerate(subcat_tweets[:]):
+                        if tweet.get('url', '') in slack_tweet_urls:
+                            categorized_slack_urls.add(tweet.get('url', ''))
+                
+                # Find uncategorized slack tweets
+                uncategorized_slack_tweets = [
+                    tweet for tweet in slack_tweets 
+                    if tweet.get('url', '') not in categorized_slack_urls
+                ]
+                
+                # If there are any uncategorized slack tweets, add them to the Slack subcategory
+                if uncategorized_slack_tweets:
+                    logger.info(f"Adding {len(uncategorized_slack_tweets)} uncategorized Slack tweets to '{slack_subcategory}' subcategory")
+                    if slack_subcategory not in result[CATEGORY]:
+                        result[CATEGORY][slack_subcategory] = []
+                    result[CATEGORY][slack_subcategory].extend(uncategorized_slack_tweets)
+            
             # Count total categorized tweets
             categorized_tweets = sum(len(tweets) for tweets in non_empty_subcategories.values())
 

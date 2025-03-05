@@ -75,10 +75,10 @@ class DataProcessor:
         """Process tweets with retry logic"""
         try:
             if not date_str:
-                # Default to yesterday's date
+                # Use the same date as provided by the news generator
+                # which now reads from the persistent date file
                 current_time = datetime.now(zoneinfo.ZoneInfo("UTC"))
-                yesterday = current_time - timedelta(days=1)
-                date_str = yesterday.strftime('%Y%m%d')
+                date_str = current_time.strftime('%Y%m%d')
                 
             logger.info(f"Processing tweets for date: {date_str}")
             
@@ -118,22 +118,37 @@ class DataProcessor:
                 logger.error(f"Directory not found: {self.today_dir}")
                 return {}
                 
-            # List all files in directory
-            files = list(self.today_dir.glob('column_*.json'))
+            # List all JSON files in directory - now using *_Tweets.json pattern
+            files = list(self.today_dir.glob('*.json'))
             if not files:
-                logger.error(f"No column_*.json files found in {self.today_dir}")
+                logger.error(f"No JSON files found in {self.today_dir}")
                 return {}
                 
-            logger.info(f"Found {len(files)} column files: {[f.name for f in files]}")
+            logger.info(f"Found {len(files)} tweet files: {[f.name for f in files]}")
             
             for file in files:
                 try:
-                    column_id = file.stem.split('_')[1]  # Get column number from filename
-                    logger.info(f"Loading tweets from {file.name}")
+                    # Extract category name from filename (e.g., "Arbitrum" from "Arbitrum_Tweets.json")
+                    category = file.stem.split('_')[0] if '_' in file.stem else file.stem
+                    logger.info(f"Loading tweets from {file.name} for category: {category}")
                     
                     with open(file, 'r', encoding='utf-8') as f:
-                        tweets = json.load(f)
-                        columns[column_id] = tweets
+                        file_data = json.load(f)
+                        
+                        # Handle both formats:
+                        # 1. Direct array of tweets
+                        # 2. Nested structure with metadata and tweets array
+                        if isinstance(file_data, dict) and 'tweets' in file_data and isinstance(file_data['tweets'], list):
+                            tweets = file_data['tweets']
+                            logger.info(f"Found {len(tweets)} tweets in nested structure")
+                        elif isinstance(file_data, list):
+                            tweets = file_data
+                            logger.info(f"Found {len(tweets)} tweets in direct array")
+                        else:
+                            logger.error(f"Unexpected format in {file.name}")
+                            continue
+                            
+                        columns[category] = tweets
                         total_tweets += len(tweets)
                         logger.info(f"Loaded {len(tweets)} tweets from {file.name}")
                         
@@ -141,7 +156,7 @@ class DataProcessor:
                     log_error(logger, e, f"Failed to load tweets from {file}")
                     continue
                     
-            logger.info(f"Loaded {total_tweets} raw tweets from {len(columns)} columns in {self.today_dir}")
+            logger.info(f"Loaded {total_tweets} raw tweets from {len(columns)} categories in {self.today_dir}")
             return columns
             
         except Exception as e:
@@ -191,22 +206,37 @@ class DataProcessor:
             raise DataProcessingError(f"Duplicate removal failed: {str(e)}")
             
     def _normalize_tweet(self, tweet):
-        """Normalize tweet text and metadata"""
+        """Normalize tweet structure for processing"""
         try:
-            normalized = tweet.copy()
+            normalized = {
+                'id': tweet.get('id', ''),
+                'text': tweet.get('text', ''),
+                'authorHandle': tweet.get('author_handle', tweet.get('authorHandle', '')),
+                'url': tweet.get('url', ''),
+                'processed_at': datetime.now().isoformat(),
+                'is_repost': tweet.get('is_repost', False),
+                'is_quote_tweet': tweet.get('is_quote_tweet', False)
+            }
             
+            # Handle quoted content
+            if tweet.get('quoted_content'):
+                quoted = tweet['quoted_content']
+                normalized['quotedContent'] = {
+                    'id': quoted.get('id', ''),
+                    'text': quoted.get('text', ''),
+                    'authorHandle': quoted.get('author_handle', quoted.get('authorHandle', '')),
+                    'url': quoted.get('url', '')
+                }
+                
             # Normalize text
-            if 'text' in normalized:
+            if normalized['text']:
                 normalized['text'] = self.normalize_text(normalized['text'])
                 
-            # Add processing metadata
-            normalized['processed_at'] = datetime.now().isoformat()
-            
             return normalized
             
         except Exception as e:
-            log_error(logger, e, f"Failed to normalize tweet: {tweet.get('id', 'unknown')}")
-            raise DataProcessingError(f"Tweet normalization failed: {str(e)}")
+            logger.warning(f"Failed to normalize tweet {tweet.get('id', 'unknown')}: {str(e)}")
+            return None
             
     def _process_raw_tweets(self, raw_columns):
         """Add metadata to processed data"""
@@ -214,37 +244,47 @@ class DataProcessor:
             processed_data = {
                 'metadata': {
                     'processed_at': datetime.now().isoformat(),
-                    'columns_processed': len(raw_columns)
+                    'categories_processed': len(raw_columns)
                 },
-                'columns': {},
+                'categories': {},
                 'total_tweets': 0
             }
             
-            for column_id, tweets in raw_columns.items():
-                logger.info(f"Processing column {column_id} with {len(tweets)} tweets")
+            for category, tweets in raw_columns.items():
+                logger.info(f"Processing category {category} with {len(tweets)} tweets")
                 
                 # Remove duplicates based on tweet ID
                 seen_ids = set()
                 unique_tweets = []
                 for tweet in tweets:
-                    if tweet.get('id') not in seen_ids:
-                        seen_ids.add(tweet.get('id'))
-                        unique_tweets.append(tweet)
+                    if not isinstance(tweet, dict):
+                        logger.warning(f"Skipping non-dict tweet in category {category}")
+                        continue
+                    
+                    tweet_id = tweet.get('id')
+                    if not tweet_id:
+                        logger.warning(f"Skipping tweet without ID in category {category}")
+                        continue
                         
-                logger.info(f"Removed {len(tweets) - len(unique_tweets)} duplicate tweets")
+                    if tweet_id not in seen_ids:
+                        seen_ids.add(tweet_id)
+                        # Filter and normalize tweets
+                        if self._is_valid_tweet(tweet):
+                            normalized_tweet = self._normalize_tweet(tweet)
+                            if normalized_tweet:
+                                unique_tweets.append(normalized_tweet)
                 
-                # Filter and normalize remaining tweets
-                normalized_tweets = []
-                for tweet in unique_tweets:
-                    if self.is_valid_tweet(tweet):
-                        tweet['text'] = self.normalize_text(tweet['text'])
-                        normalized_tweets.append(tweet)
-                        
-                processed_data['columns'][column_id] = normalized_tweets
-                processed_data['total_tweets'] += len(normalized_tweets)
-                
-                logger.info(f"Column {column_id}: {len(tweets)} to {len(normalized_tweets)} tweets after processing")
-                
+                if unique_tweets:
+                    processed_data['categories'][category] = unique_tweets
+                    processed_data['total_tweets'] += len(unique_tweets)
+                    logger.info(f"Processed {len(unique_tweets)} valid tweets for category {category}")
+                else:
+                    logger.warning(f"No valid tweets found for category {category}")
+            
+            # Make sure metadata reflects the actual counts
+            processed_data['metadata']['total_tweets'] = processed_data['total_tweets']
+            processed_data['metadata']['categories_processed'] = len(processed_data['categories'])
+            logger.info(f"Processed data structure created with {processed_data['total_tweets']} tweets across {len(processed_data['categories'])} categories")
             return processed_data
             
         except Exception as e:
@@ -252,65 +292,88 @@ class DataProcessor:
             raise DataProcessingError(f"Raw tweet processing failed: {str(e)}")
             
     def _is_valid_tweet(self, tweet):
-        """Validate tweet with error handling"""
+        """Check if a tweet is valid for processing"""
         try:
-            if not tweet.get('text'):
+            # Make sure tweet has required fields
+            if not isinstance(tweet, dict):
                 return False
                 
-            text = tweet['text'].strip()
-            words = text.split()
-            
-            return len(words) >= 2
+            # Require at least an id and text
+            if 'id' not in tweet or 'text' not in tweet:
+                return False
+                
+            # Check if the tweet has enough text content
+            text = tweet.get('text', '')
+            if not text or len(text.split()) < self.min_words:
+                logger.debug(f"Tweet {tweet.get('id', 'unknown')} rejected: not enough text")
+                return False
+                
+            # Basic content filtering - you can expand this
+            if text.startswith('RT @') and not tweet.get('is_repost', False):
+                logger.debug(f"Tweet {tweet.get('id', 'unknown')} rejected: likely a retweet")
+                return False
+                
+            return True
             
         except Exception as e:
-            log_error(logger, e, f"Failed to validate tweet: {tweet.get('id', 'unknown')}")
+            logger.warning(f"Error validating tweet {tweet.get('id', 'unknown')}: {str(e)}")
             return False
             
     async def _save_processed_tweets(self, processed_data, date_str):
-        """Save processed tweets into a single combined file since all columns are one category"""
+        """Save processed tweets to file"""
         try:
-            date_dir = self.processed_dir / date_str
-            date_dir.mkdir(parents=True, exist_ok=True)
+            # Ensure directory exists
+            output_file = self.processed_dir / f"{date_str}.json"
             
-            # Combine all tweets from all columns into a single list
-            all_tweets = []
-            for col_id, tweets in processed_data['columns'].items():
-                all_tweets.extend(tweets)
+            logger.info(f"Saving {processed_data['metadata']['total_tweets']} processed tweets to {output_file}")
             
-            # Create combined data structure
-            combined_data = {
-                'metadata': {
-                    'processed_at': processed_data['metadata']['processed_at'],
-                    'total_tweets': len(all_tweets)
-                },
-                'tweets': all_tweets
-            }
+            # Create parent directories if they don't exist
+            output_file.parent.mkdir(parents=True, exist_ok=True)
             
-            # Save to a single file
-            output_file = date_dir / 'combined_tweets.json'
-            with open(output_file, 'w') as f:
-                json.dump(combined_data, f, indent=2)
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(processed_data, f, indent=2, ensure_ascii=False)
+                
+            logger.info(f"Successfully saved processed tweets to {output_file}")
             
-            logger.info(f"Saved {len(all_tweets)} tweets to {output_file}")
+            # Also save individual category files for easier access
+            categories_dir = self.processed_dir / f"{date_str}_categories"
+            categories_dir.mkdir(parents=True, exist_ok=True)
+            
+            for category, tweets in processed_data['categories'].items():
+                category_file = categories_dir / f"{category}.json"
+                with open(category_file, 'w', encoding='utf-8') as f:
+                    json.dump(tweets, f, indent=2, ensure_ascii=False)
+                    
+                logger.info(f"Saved {len(tweets)} tweets for category {category} to {category_file}")
+                
+            return True
             
         except Exception as e:
             log_error(logger, e, f"Failed to save processed tweets for date {date_str}")
             raise DataProcessingError(f"Failed to save processed tweets: {str(e)}")
 
     def process_columns(self, raw_columns):
-        """Core processing pipeline"""
-        processed = {}
+        """Steps 3.1-3.4: Process all columns"""
+        # Process tweets
+        processed_data = self._process_raw_tweets(raw_columns)
         
-        # Step 3.1: Deduplication
-        deduped = self.deduplicate(raw_columns)
+        # Ensure metadata always has required fields
+        if 'metadata' not in processed_data:
+            processed_data['metadata'] = {}
         
-        # Step 3.2-3.4: Text cleaning
-        cleaned = self.clean_tweets(deduped)
+        if 'total_tweets' not in processed_data['metadata']:
+            # Use the total_tweets field from the root object
+            processed_data['metadata']['total_tweets'] = processed_data.get('total_tweets', 0)
+            
+        if 'categories_processed' not in processed_data['metadata']:
+            processed_data['metadata']['categories_processed'] = len(processed_data.get('categories', {}))
         
-        # Step 3.5-3.6: Structured output
-        structured = self.structure_output(cleaned)
-        
-        return structured
+        # Log results
+        logger.info(f"After processing: {processed_data['metadata']['total_tweets']} tweets across {processed_data['metadata']['categories_processed']} categories")
+        if processed_data['metadata']['total_tweets'] == 0:
+            logger.warning("No valid tweets found after processing")
+            
+        return processed_data
 
     def clean_tweets(self, columns):
         """Steps 3.2-3.4: Text validation and normalization"""
@@ -347,10 +410,10 @@ class DataProcessor:
         return {
             'metadata': {
                 'processed_at': datetime.now().isoformat(),
-                'columns_processed': len(columns),
+                'categories_processed': len(columns),
                 'total_tweets': total
             },
-            'columns': columns
+            'categories': columns
         }
 
 if __name__ == "__main__":

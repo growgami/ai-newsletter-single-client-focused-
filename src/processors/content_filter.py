@@ -630,10 +630,19 @@ Return ONLY a JSON object in this exact format:
                 # Process each item in chunk
                 for item in chunk:
                     try:
+                        # Check if this tweet is from Slack, if so preserve it without additional filtering
+                        if item.get('from_slack', False):
+                            logger.info(f"Preserving tweet from Slack: {item.get('url', '')}")
+                            # For tweets from Slack, directly add them to the filtered list
+                            # These already have the proper structure from slack_pump.py
+                            # Ensure we keep all original fields from the Slack tweet
+                            chunk_filtered.append(item)
+                            continue
+                            
                         tweet_text = item.get('tweet', '')  # Updated from alpha_filter output
                         reposted_text = item.get('reposted_content', '')  # Updated from alpha_filter output
                         quoted_text = item.get('quoted_content', '')  # Updated from alpha_filter output
-                        author = item.get('author', '')  # Updated from alpha_filter output
+                        author = item.get('author', item.get('authorHandle', ''))  # Check for both author and authorHandle
                         
                         # Pass the CATEGORY to _extract_summary
                         result = await self._extract_summary(tweet_text, reposted_text, quoted_text, author, CATEGORY)
@@ -774,6 +783,11 @@ Return ONLY a JSON object in this exact format:
                         # Add new tweets to output under category
                         if category_key not in output:
                             output[category_key] = {'tweets': []}
+                        
+                        # Check for any tweets with from_slack=True and ensure they are preserved
+                        for tweet in result[category_key]['tweets']:
+                            if tweet.get('from_slack', False):
+                                logger.info(f"Preserving Slack tweet in output: {tweet.get('url', '')}")
                         
                         output[category_key]['tweets'].extend(result[category_key]['tweets'])
                         

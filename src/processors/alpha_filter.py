@@ -67,7 +67,7 @@ class AlphaFilter:
         """Load processing state from file"""
         if self.state_file.exists():
             try:
-                with open(self.state_file, 'r') as f:
+                with open(self.state_file, 'r', encoding='utf-8') as f:
                     state = json.load(f)
                     # Validate state before returning
                     if self._validate_state(state):
@@ -90,7 +90,7 @@ class AlphaFilter:
         """Save processing state to file"""
         try:
             temp_file = self.state_file.with_suffix('.tmp')
-            with open(temp_file, 'w') as f:
+            with open(temp_file, 'w', encoding='utf-8') as f:
                 json.dump(state, f, indent=2)
             temp_file.replace(self.state_file)  # Atomic write
         except Exception as e:
@@ -100,7 +100,8 @@ class AlphaFilter:
 
     def _get_input_file(self, date_str):
         """Get input file path from data_processor"""
-        return self.processed_dir / date_str / 'combined_tweets.json'
+        # Now the data_processor saves the main file in the processed directory root
+        return self.processed_dir / f"{date_str}.json"
 
     def _get_output_file(self, date_str):
         """Get output file path"""
@@ -111,6 +112,17 @@ class AlphaFilter:
         try:
             await self.circuit_breaker.check()
             
+            # Check if this tweet is from Slack, if so preserve it without filtering
+            if tweet.get('from_slack', False):
+                logger.info(f"Preserving tweet from Slack in alpha filter: {tweet.get('url', '')}")
+                # For tweets from Slack, return them without filtering but with a placeholder score and signal
+                filtered_tweet = tweet.copy()
+                # Add required alpha filter fields with placeholder values
+                filtered_tweet['alpha_score'] = 10.0  # High score to ensure it's kept
+                filtered_tweet['alpha_signal'] = "Slack source (bypassed filtering)"
+                filtered_tweet['category'] = category
+                return filtered_tweet
+                
             # Prepare prompt with safe content access
             prompt = self._prepare_filtering_prompt(tweet, category)
             if prompt is None:
@@ -191,9 +203,9 @@ class AlphaFilter:
     def _prepare_filtering_prompt(self, tweet, category):
         """Prepare the prompt for filtering content"""
         try:
-            # Map fields from data_processor format
+            # Map fields from data_processor format - adjusted for actual structure
             tweet_text = tweet.get('text', '')
-            author = tweet.get('authorHandle', '')
+            author = tweet.get('authorHandle', '')  # Use authorHandle field
             quoted_text = tweet.get('quotedContent', {}).get('text', '') if tweet.get('quotedContent') else ''
             reposted_text = tweet.get('repostedContent', {}).get('text', '') if tweet.get('repostedContent') else ''
             url = tweet.get('url', '')
@@ -433,7 +445,7 @@ If ANY criteria is not met, return: {{}}
                 return None
 
             try:
-                with open(input_file, 'r') as f:
+                with open(input_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
             except Exception as e:
                 logger.error(f"Error loading input file: {str(e)}")
@@ -443,7 +455,7 @@ If ANY criteria is not met, return: {{}}
             output_file = self._get_output_file(date_str)
             if output_file.exists():
                 try:
-                    with open(output_file, 'r') as f:
+                    with open(output_file, 'r', encoding='utf-8') as f:
                         output = json.load(f)
                 except Exception as e:
                     logger.error(f"Error loading existing output: {str(e)}")
@@ -466,7 +478,21 @@ If ANY criteria is not met, return: {{}}
                 }
 
             # Process tweets in chunks for rate limiting
-            tweets = data.get('tweets', [])
+            # Extract tweets from all categories and flatten them
+            tweets = []
+            for category, category_tweets in data.get('categories', {}).items():
+                # Add category information to each tweet
+                for tweet in category_tweets:
+                    tweet['category'] = category
+                    tweets.append(tweet)
+                    
+            if not tweets:
+                logger.warning(f"No tweets found in input file for date {date_str}")
+                return None
+                
+            logger.info(f"Processing {len(tweets)} tweets from {len(data.get('categories', {}))} categories")
+
+            # Process tweets in chunks
             chunk_size = 5  # Process 5 tweets at a time
             total_chunks = (len(tweets) + chunk_size - 1) // chunk_size
             
@@ -485,8 +511,8 @@ If ANY criteria is not met, return: {{}}
                 
                 logger.info(f"Processing chunk {chunk_number}/{total_chunks}")
                 
-                # Process chunk in parallel
-                chunk_tasks = [self.filter_content(tweet, CATEGORY) for tweet in chunk]
+                # Process chunk in parallel - use the category from each tweet
+                chunk_tasks = [self.filter_content(tweet, tweet.get('category', CATEGORY)) for tweet in chunk]
                 chunk_results = await asyncio.gather(*chunk_tasks)
                 
                 # Track new tweets for this chunk
@@ -508,7 +534,7 @@ If ANY criteria is not met, return: {{}}
                     # Save output atomically
                     try:
                         temp_file = output_file.with_suffix('.tmp')
-                        with open(temp_file, 'w') as f:
+                        with open(temp_file, 'w', encoding='utf-8') as f:
                             json.dump(output, f, indent=2)
                         temp_file.replace(output_file)
                         logger.info(f"Saved {len(new_tweets)} new tweets (total: {len(output['tweets'])})")
@@ -585,36 +611,36 @@ If ANY criteria is not met, return: {{}}
             return False
 
     def _validate_output_file(self, output_file):
-        """Validate output file structure and content"""
-        try:
-            if not output_file.exists():
-                return False
+        """Validate the output file structure"""
+        if not output_file.exists():
+            return False
             
-            with open(output_file, 'r') as f:
-                data = json.load(f)
+        try:
+            with open(output_file, 'r', encoding='utf-8') as f:
+                output = json.load(f)
             
             # Check basic structure
-            if not isinstance(data, dict):
+            if not isinstance(output, dict):
                 logger.error("Output file is not a valid JSON object")
                 return False
             
             required_fields = ['tweets', 'metadata']
-            if not all(field in data for field in required_fields):
+            if not all(field in output for field in required_fields):
                 logger.error("Invalid output file structure")
                 return False
             
             metadata_fields = ['processed_date', 'total_tweets', 'last_update']
-            if not all(field in data['metadata'] for field in metadata_fields):
+            if not all(field in output['metadata'] for field in metadata_fields):
                 logger.error("Invalid metadata structure")
                 return False
             
             # Validate tweets array
-            if not isinstance(data['tweets'], list):
+            if not isinstance(output['tweets'], list):
                 logger.error("Tweets field is not an array")
                 return False
             
             # Validate tweet structure if any exist
-            for tweet in data['tweets']:
+            for tweet in output['tweets']:
                 required_tweet_fields = ['tweet', 'author', 'url', 'tweet_id', 'category']
                 if not all(field in tweet for field in required_tweet_fields):
                     logger.error("Invalid tweet structure")
@@ -629,77 +655,91 @@ If ANY criteria is not met, return: {{}}
             return False
 
     async def recover_state(self):
-        """Emergency recovery of processing state"""
+        """Recover state from output files if state file is corrupted"""
         try:
-            logger.info("Starting emergency state recovery")
-            
-            # Check output file
-            output_file = self._get_output_file(None)
-            if self._validate_output_file(output_file):
-                with open(output_file, 'r') as f:
-                    data = json.load(f)
-                    date_str = data['metadata']['processed_date']
-                    total_tweets = data['metadata']['total_tweets']
+            # Check if output file exists
+            output_file = self._get_output_file(None)  # Combined file
+            if not output_file.exists():
+                logger.warning("No output file found for recovery")
+                return False
                 
-                # Load input file to get total chunks
-                input_file = self._get_input_file(date_str)
-                if input_file.exists():
-                    with open(input_file, 'r') as f:
-                        input_data = json.load(f)
-                        total_tweets_input = len(input_data.get('tweets', []))
-                        chunk_size = 5  # Match our chunk size
-                        total_chunks = (total_tweets_input + chunk_size - 1) // chunk_size
-                else:
-                    logger.error("Cannot find input file for recovery")
+            try:
+                with open(output_file, 'r', encoding='utf-8') as f:
+                    output = json.load(f)
+                
+                # Get the processed date from the output file
+                processed_date = output.get('metadata', {}).get('processed_date')
+                if not processed_date:
+                    logger.error("No processed_date found in output file metadata")
                     return False
+                    
+                # Get the input file path using the processed date
+                input_file = self._get_input_file(processed_date)
                 
-                # Reconstruct state
-                state = {
-                    'last_processed_date': date_str,
-                    'last_chunk': 0,  # Reset to beginning to be safe
-                    'total_chunks': total_chunks,
-                    'completed': False,
-                    'columns_state': {}  # Keep for backward compatibility
-                }
+                # Try to load the input file to check if it exists
+                try:
+                    with open(input_file, 'r', encoding='utf-8') as f:
+                        json.load(f)
+                    input_exists = True
+                except Exception as e:
+                    logger.error(f"Error loading input file {input_file}: {str(e)}")
+                    input_exists = False
                 
-                self._save_state(state)
-                logger.info(f"Recovered state for date {date_str} with {total_tweets} tweets")
-                logger.info(f"Processing will resume from the beginning to ensure completeness")
-                return True
+                if input_exists:
+                    # Reconstruct state
+                    state = {
+                        'last_processed_date': processed_date,
+                        'last_chunk': 0,  # Reset to beginning to be safe
+                        'total_chunks': output['metadata']['total_tweets'],
+                        'completed': False,
+                        'columns_state': {}  # Keep for backward compatibility
+                    }
+                    
+                    self._save_state(state)
+                    logger.info(f"Recovered state for date {processed_date} with {output['metadata']['total_tweets']} tweets")
+                    logger.info(f"Processing will resume from the beginning to ensure completeness")
+                    return True
                 
+            except Exception as e:
+                logger.error(f"Error during state recovery: {str(e)}")
+            
         except Exception as e:
             logger.error(f"Error during state recovery: {str(e)}")
         return False
 
     def get_processing_progress(self):
-        """Get current processing progress"""
+        """Get the current processing progress"""
         try:
-            state = self._load_state()
-            if not self._validate_state(state):
+            # Check output file
+            output_file = self._get_output_file(None)  # Combined file
+            if output_file.exists():
+                try:
+                    with open(output_file, 'r', encoding='utf-8') as f:
+                        output = json.load(f)
+                    
+                    # Get tweet counts if output is valid
+                    total_tweets = 0
+                    if self._validate_output_file(output_file):
+                        total_tweets = output['metadata']['total_tweets']
+                    
+                    progress = {
+                        'date': output['metadata']['processed_date'],
+                        'progress': f"{output['metadata']['last_chunk']}/{output['metadata']['total_chunks']} chunks",
+                        'percentage': round((output['metadata']['last_chunk'] / output['metadata']['total_chunks'] * 100) if output['metadata']['total_chunks'] > 0 else 0, 2),
+                        'completed': output['metadata']['completed'],
+                        'output_valid': self._validate_output_file(output_file),
+                        'total_tweets_processed': total_tweets,
+                        'last_update': output['metadata']['last_update']
+                    }
+                    
+                    logger.info(f"Progress: {progress['percentage']}% ({progress['progress']}) - {total_tweets} tweets processed")
+                    return progress
+                except Exception as e:
+                    logger.error(f"Error getting progress: {str(e)}")
+                    return None
+            else:
+                logger.warning("No output file found for progress calculation")
                 return None
-            
-            output_file = self._get_output_file(None)
-            output_valid = self._validate_output_file(output_file)
-            
-            # Get tweet counts if output is valid
-            total_tweets = 0
-            if output_valid:
-                with open(output_file, 'r') as f:
-                    data = json.load(f)
-                    total_tweets = data['metadata']['total_tweets']
-            
-            progress = {
-                'date': state['last_processed_date'],
-                'progress': f"{state['last_chunk']}/{state['total_chunks']} chunks",
-                'percentage': round((state['last_chunk'] / state['total_chunks'] * 100) if state['total_chunks'] > 0 else 0, 2),
-                'completed': state['completed'],
-                'output_valid': output_valid,
-                'total_tweets_processed': total_tweets,
-                'last_update': datetime.now(zoneinfo.ZoneInfo("UTC")).isoformat()
-            }
-            
-            logger.info(f"Progress: {progress['percentage']}% ({progress['progress']}) - {total_tweets} tweets processed")
-            return progress
             
         except Exception as e:
             logger.error(f"Error getting progress: {str(e)}")
